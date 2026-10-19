@@ -191,14 +191,14 @@ if __name__ == "__main__":
             "output_folder": "van_iam_paragraph_learned_stop",  # folder names for logs and weigths
             "max_nb_epochs": 5000,  # max number of epochs for the training
             "completed_epochs" : None,
-            "max_training_time": 3600 * (24 + 23),  # max training time limit (in seconds)
+            "max_training_time": 3600 * 24 * 7,  # max training time limit (in seconds)
             "load_epoch": "best",  # ["best", "last"], to load weights from best epoch or last trained epoch
             "interval_save_weights": None,  # None: keep best and last only
             "batch_size": 8,  # mini-batch size per GPU
             "use_ddp": False,  # Use DistributedDataParallel
             "ddp_port": "10000",  # Port for Distributed Data Parallel communications
             "use_amp": True,  # Enable mixed precision with torch.amp
-            "manual_seed": 1111,
+            "manual_seed": 2222,
             "nb_gpu": torch.cuda.device_count(),
             "optimizer": {
                 "class": Adam,
