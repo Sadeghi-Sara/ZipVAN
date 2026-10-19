@@ -27,3 +27,4 @@ Datasets/*
 **/dataset_features
 **/OCR/OutputDropout/**
 *.0
+.venv/

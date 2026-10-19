@@ -186,13 +186,14 @@ if __name__ == "__main__":
         "training_params": {
             "output_folder": "van_iam_paragraph_learned_stop",  # folder names for logs and weigths
             "max_nb_epochs": 5000,  # max number of epochs for the training
+            "completed_epochs" : None,
             "max_training_time": 3600 * (24 + 23),  # max training time limit (in seconds)
             "load_epoch": "best",  # ["best", "last"], to load weights from best epoch or last trained epoch
             "interval_save_weights": None,  # None: keep best and last only
             "batch_size": 8,  # mini-batch size per GPU
             "use_ddp": False,  # Use DistributedDataParallel
             "ddp_port": "10000",  # Port for Distributed Data Parallel communications
-            "use_apex": True,  # Enable mix-precision with apex package
+            "use_amp": True,  # Enable mixed precision with torch.amp
             "nb_gpu": torch.cuda.device_count(),
             "optimizer": {
                 "class": Adam,
@@ -201,6 +202,10 @@ if __name__ == "__main__":
                     "amsgrad": False,
                 }
             },
+            "total_runtime_hours": None,
+            "average_runtime_per_epoch": None,
+            "peak_gpu_allocated_gb": None,
+            "peak_gpu_reserved_gb": None,
             "eval_on_valid": True,  # Whether to eval and logs metrics on validation set during training or not
             "eval_on_valid_interval": 2,  # Interval (in epochs) to evaluate during training
             "focus_metric": "cer",  # Metrics to focus on to determine best epoch

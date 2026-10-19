@@ -38,6 +38,7 @@ import editdistance
 import re
 import torch
 from torch.nn import CTCLoss
+from torch.amp import autocast
 
 
 class TrainerLineCTC(GenericTrainingManager):
@@ -60,13 +61,27 @@ class TrainerLineCTC(GenericTrainingManager):
         y_len = batch_data["labels_len"]
 
         loss_ctc = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
-        self.optimizer.zero_grad()
-        x = self.models["encoder"](x)
-        global_pred = self.models["decoder"](x)
+        self.optimizer.zero_grad(set_to_none=True)
 
-        loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+        # AMP forward
+        with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
+
+            x = self.models["encoder"](x)
+            global_pred = self.models["decoder"](x)
+
+            loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+
+        if torch.isnan(loss):
+            print("NaN detected")
+
         self.backward_loss(loss)
-        self.optimizer.step()
+
+        if self.params["training_params"]["use_amp"]:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+
         pred = torch.argmax(global_pred, dim=1).cpu().numpy()
 
         metrics = self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=loss.item(), metric_names=metric_names)
@@ -80,10 +95,18 @@ class TrainerLineCTC(GenericTrainingManager):
 
         loss_ctc = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
 
-        x = self.models["encoder"](x)
-        global_pred = self.models["decoder"](x)
+        with torch.no_grad():
+            with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
 
-        loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+                x = self.models["encoder"](x)
+                global_pred = self.models["decoder"](x)
+
+                loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+
+                if not torch.isfinite(loss):
+                    print("NaN detected in eval")
+                    loss = torch.tensor(0.0, device=self.device)
+
         pred = torch.argmax(global_pred, dim=1).cpu().numpy()
         metrics = self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=loss.item(), metric_names=metric_names)
         if "pred" in metric_names:

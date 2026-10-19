@@ -34,13 +34,7 @@
 
 import torch
 import os
-try:
-    import apex
-    from apex.parallel import DistributedDataParallel as aDDP
-    is_installed_apex = True
-except ImportError:
-    is_installed_apex = False
-    print("Apex not installed")
+from torch.cuda.amp import GradScaler
 import copy
 import json
 import torch.distributed as dist
@@ -73,14 +67,13 @@ class GenericTrainingManager:
         self.latest_valid_metrics = dict()
         self.curriculum_info = dict()
         self.curriculum_info["latest_valid_metrics"] = dict()
-
+        self.scaler = GradScaler(enabled=self.params["training_params"].get("use_amp", False))
         self.optimizer = None
         self.lr_scheduler = None
         self.best = None
         self.writer = None
 
         self.init_hardware_config()
-        self.init_apex_config()
         self.init_paths()
         self.load_dataset()
         self.load_model()
@@ -108,21 +101,11 @@ class GenericTrainingManager:
         if self.dataset.charset:
             self.params["model_params"]["vocab_size"] = len(self.dataset.charset)
 
-    def init_apex_config(self):
-        if not is_installed_apex:
-            if self.params["training_params"]["use_apex"]:
-                print("Warning: Apex not used ! (not installed)")
-            self.params["training_params"]["use_apex"] = False
-        self.apex_config = {
-            "level": "O2",
-        }
-        self.params["dataset_params"]["use_apex"] = self.params["training_params"]["use_apex"]
-
     def init_hardware_config(self):
         # Debug mode
         if self.params["training_params"]["force_cpu"]:
             self.params["training_params"]["use_ddp"] = False
-            self.params["training_params"]["use_apex"] = False
+            self.params["training_params"]["use_amp"] = False
         # Manage Distributed Data Parallel & GPU usage
         self.manual_seed = 1111 if "manual_seed" not in self.params["training_params"].keys() else \
         self.params["training_params"]["manual_seed"]
@@ -161,11 +144,13 @@ class GenericTrainingManager:
         print("##################")
 
     def load_model(self, reset_optimizer=False):
-        def to_DDP(model, use_apex, rank):
-            if use_apex:
-                return aDDP(model)
-            else:
-                return tDDP(model, device_ids=[rank])
+        def to_DDP(model, rank):
+            return tDDP(
+                model,
+                device_ids=[rank],
+                output_device=rank,
+                find_unused_parameters=False
+            )
 
         # Instanciate Model
         for model_name in self.params["model_params"]["models"].keys():
@@ -184,20 +169,16 @@ class GenericTrainingManager:
                 # Continue training
                 if self.params["training_params"]["load_epoch"] in filename:
                     checkpoint_path = os.path.join(self.paths["checkpoints"], filename)
-                    checkpoint = torch.load(checkpoint_path)
+                    #checkpoint = torch.load(checkpoint_path)
+                    #checkpoint = torch.load(checkpoint_path, weights_only=False)
+                    checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=self.device)
                     self.load_save_info(checkpoint)
                     self.latest_epoch = checkpoint["epoch"]
                     self.best = checkpoint["best"]
-                    # Make model and optimizer compatible with apex if used
-                    if self.params["training_params"]["use_apex"]:
-                        models = [self.models[model_name] for model_name in self.models.keys()]
-                        models, self.optimizer = apex.amp.initialize(models, self.optimizer, opt_level=self.apex_config["level"])
-                        for i, model_name in enumerate(self.models.keys()):
-                            self.models[model_name] = models[i]
                     # Make model compatible with Distributed Data Parallel if used
                     if self.params["training_params"]["use_ddp"]:
                         for model_name in self.models.keys():
-                            self.models[model_name] = to_DDP(self.models[model_name], self.params["training_params"]["use_apex"], self.ddp_config["rank"])
+                            self.models[model_name] = to_DDP(self.models[model_name], self.ddp_config["rank"])
                     # Load model weights from past training
                     for model_name in self.models.keys():
                         self.models[model_name].load_state_dict(checkpoint["{}_state_dict".format(model_name)])
@@ -207,9 +188,6 @@ class GenericTrainingManager:
                     # Load optimizer scheduler config from past training if used
                     if "lr_scheduler" in self.params["training_params"] and self.params["training_params"]["lr_scheduler"] and "lr_scheduler_state_dict" in checkpoint.keys():
                         self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
-                    # Load apex state from past training if used
-                    if self.params["training_params"]["use_apex"]:
-                        apex.amp.load_state_dict(checkpoint["apex_state_dict"])
                     break
 
         # Print the number of trained epoch so far with the model
@@ -227,7 +205,8 @@ class GenericTrainingManager:
                 for model_name in self.params["model_params"]["transfer_learning"].keys():
                     state_dict_name, path, learnable, strict = self.params["model_params"]["transfer_learning"][model_name]
                     # Loading pretrained weights file
-                    checkpoint = torch.load(path)
+                    #checkpoint = torch.load(path)
+                    checkpoint = torch.load(path, weights_only=False, map_location=self.device)
                     try:
                         # Load pretrained weights for model
                         self.models[model_name].load_state_dict(checkpoint["{}_state_dict".format(state_dict_name)], strict=strict)
@@ -244,20 +223,10 @@ class GenericTrainingManager:
                     if not learnable:
                         self.set_model_learnable(self.models[model_name], False)
 
-            # Make model and optimizer compatible with apex if used
-            if self.params["training_params"]["use_apex"]:
-                models = [self.models[model_name] for model_name in self.models.keys()]
-                models, self.optimizer = apex.amp.initialize(models, optimizers=self.optimizer,
-                                                             opt_level=self.apex_config["level"],
-                                                             keep_batchnorm_fp32=True,
-                                                             loss_scale="dynamic")
-                for i, model_name in enumerate(self.models.keys()):
-                    self.models[model_name] = models[i]
-
             # make the model compatible with Distributed Data Parallel if used
             if self.params["training_params"]["use_ddp"]:
                 for model_name in self.models.keys():
-                    self.models[model_name] = to_DDP(self.models[model_name], self.params["training_params"]["use_apex"], self.ddp_config["rank"])
+                    self.models[model_name] = to_DDP(self.models[model_name], self.ddp_config["rank"])
             return
 
     @staticmethod
@@ -279,7 +248,7 @@ class GenericTrainingManager:
         content = {
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epoch': epoch,
-            "apex_state_dict": apex.amp.state_dict() if self.params["training_params"]["use_apex"] else None,
+            "scaler_state_dict": self.scaler.state_dict(),
             'best': self.best,
         }
         if self.lr_scheduler:
@@ -340,7 +309,7 @@ class GenericTrainingManager:
 
         path = os.path.join(self.paths["results"], "params")
         if os.path.isfile(path):
-            return
+            os.remove(path)
         params = copy.deepcopy(self.params)
         params = class_to_str_dict(params)
         total_params = 0
@@ -434,12 +403,9 @@ class GenericTrainingManager:
         return display_values
 
     def backward_loss(self, loss, retain_graph=False):
-        """
-        Custom loss backward depending on the use of apex package
-        """
-        if self.params["training_params"]["use_apex"]:
-            with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward(retain_graph=retain_graph)
+
+        if self.params["training_params"]["use_amp"]:
+            self.scaler.scale(loss).backward(retain_graph=retain_graph)
         else:
             loss.backward(retain_graph=retain_graph)
 
@@ -448,8 +414,12 @@ class GenericTrainingManager:
         if self.is_master:
             self.writer = SummaryWriter(self.paths["results"])
             self.save_params()
+
         # init variables
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         self.begin_time = time()
+        self.train_start_time = self.begin_time
         focus_metric_name = self.params["training_params"]["focus_metric"]
         nb_epochs = self.params["training_params"]["max_nb_epochs"]
         interval_save_weights = self.params["training_params"]["interval_save_weights"]
@@ -522,6 +492,48 @@ class GenericTrainingManager:
                     self.save_model(epoch=num_epoch, name="weigths", keep_weights=True)
                 self.writer.flush()
 
+            # save final params after training
+            #if self.is_master:
+            #    self.save_params()
+
+        #FINAL STATS (runtime + GPU memory)
+
+        total_time_sec = time() - self.train_start_time
+
+        if torch.cuda.is_available():
+            peak_alloc_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+            peak_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
+        else:
+            peak_alloc_gb = 0
+            peak_reserved_gb = 0
+
+        # store in trainer (NOT just params)
+        self.total_runtime_sec = round(total_time_sec, 2)
+        self.total_runtime_hours = round(total_time_sec / 3600, 4)
+        self.completed_epochs = max(1, self.latest_epoch + 1)
+        self.average_runtime_per_epoch = round(total_time_sec / self.completed_epochs, 2)
+        self.peak_gpu_allocated_gb = round(peak_alloc_gb, 2)
+        self.peak_gpu_reserved_gb = round(peak_reserved_gb, 2)
+
+        # also store inside params for convenience/logging
+        self.params["training_params"]["total_runtime_sec"] = self.total_runtime_sec
+        self.params["training_params"]["total_runtime_hours"] = self.total_runtime_hours
+        self.params["training_params"]["peak_gpu_allocated_gb"] = self.peak_gpu_allocated_gb
+        self.params["training_params"]["peak_gpu_reserved_gb"] = self.peak_gpu_reserved_gb
+        self.params["training_params"]["average_runtime_per_epoch"] = self.average_runtime_per_epoch
+        self.params["training_params"]["completed_epochs"] = self.completed_epochs
+
+        # print summary
+        if self.is_master:
+            self.save_params()
+            print("\n==================== TRAINING STATS ====================")
+            print("Total time (sec):", self.total_runtime_sec)
+            print("Total time (hours):", self.total_runtime_hours)
+            print("Average time per epoch (sec):", self.average_runtime_per_epoch)
+            print("Peak GPU allocated (GB):", self.peak_gpu_allocated_gb)
+            print("Peak GPU reserved (GB):", self.peak_gpu_reserved_gb)
+            print("========================================================\n")
+            
     def evaluate(self, set_name, **kwargs):
         loader = self.dataset.valid_loaders[set_name]
         # Set models in eval mode
@@ -667,7 +679,9 @@ class GenericTrainingManager:
         for filename in os.listdir(self.paths["checkpoints"]):
             if load_mode in filename:
                 checkpoint_path = os.path.join(self.paths["checkpoints"], filename)
-                checkpoint = torch.load(checkpoint_path)
+                #checkpoint = torch.load(checkpoint_path)
+                #checkpoint = torch.load(checkpoint_path, weights_only=False)
+                checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=self.device)
                 for key in kwargs.keys():
                     checkpoint[key] = kwargs[key]
                 torch.save(checkpoint, checkpoint_path)

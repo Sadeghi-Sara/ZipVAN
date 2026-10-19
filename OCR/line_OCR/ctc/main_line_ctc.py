@@ -41,13 +41,50 @@ from torch.optim import Adam
 from basic.generic_dataset_manager import OCRDataset
 import torch.multiprocessing as mp
 import torch
-
+import time
 
 def train_and_test(rank, params):
     params["training_params"]["ddp_rank"] = rank
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    start_time = time.time()
+
     model = TrainerLineCTC(params)
     # Model trains until max_time_training or max_nb_epochs is reached
     model.train()
+
+    total_time_sec = time.time() - start_time
+    
+    # gpu memory
+    if torch.cuda.is_available():
+        peak_memory_allocated_gb = (
+            torch.cuda.max_memory_allocated() / (1024 ** 3)
+        )
+
+        peak_memory_reserved_gb = (
+            torch.cuda.max_memory_reserved() / (1024 ** 3)
+        )
+    else:
+        peak_memory_allocated_gb = 0
+        peak_memory_reserved_gb = 0
+        
+
+    # save stats
+    params["training_params"]["total_runtime_sec"] = round(total_time_sec, 2)
+
+    params["training_params"]["total_runtime_hours"] = round(
+        total_time_sec / 3600, 2
+    )
+
+    params["training_params"]["peak_gpu_allocated_gb"] = round(
+        peak_memory_allocated_gb, 2
+    )
+
+    params["training_params"]["peak_gpu_reserved_gb"] = round(
+        peak_memory_reserved_gb, 2
+    )
 
     # load weights giving best CER on valid set
     model.params["training_params"]["load_epoch"] = "best"
@@ -84,11 +121,12 @@ if __name__ == "__main__":
                 "charset_mode": "CTC",  # add blank token
                 "constraints": ["CTC_line"],  # Padding for CTC requirements if necessary
                 "preprocessings": [
+                  
                     {
                         "type": "dpi",  # modify image resolution
                         "source": 300,  # from 300 dpi
                         "target": 150,  # to 150 dpi
-                    },
+                    }, 
                     {
                         "type": "to_RGB",
                         # if grayscale image, produce RGB one (3 channels with same value) otherwise do nothing
@@ -96,7 +134,7 @@ if __name__ == "__main__":
                 ],
                 # Augmentation techniques to use at training time
                 "augmentation": {
-                    "dpi": {
+                     "dpi": {
                         "proba": 0.2,
                         "min_factor": 0.75,
                         "max_factor": 1.25,
@@ -133,7 +171,7 @@ if __name__ == "__main__":
                     },
                     "sign_flipping": {
                         "proba": 0.2,
-                    },
+                    }, 
                 },
             }
         },
@@ -152,13 +190,19 @@ if __name__ == "__main__":
         "training_params": {
             "output_folder": "fcn_iam_line",  # folder names for logs and weigths
             "max_nb_epochs": 5000,  # max number of epochs for the training
+            "completed_epochs" : None,
             "max_training_time":  3600*(24+23),  # max training time limit (in seconds)
             "load_epoch": "best",  # ["best", "last"], to load weights from best epoch or last trained epoch
             "interval_save_weights": None,  # None: keep best and last only
             "use_ddp": False,  # Use DistributedDataParallel
-            "use_apex": True,  # Enable mix-precision with apex package
+            "use_amp": True,  # Enable mixed precision with torch.amp
             "nb_gpu": torch.cuda.device_count(),
-            "batch_size": 16,  # mini-batch size per GPU
+            "total_runtime_sec": None,
+            "total_runtime_hours": None,
+            "average_runtime_per_epoch": None,
+            "peak_gpu_allocated_gb": None,
+            "peak_gpu_reserved_gb": None,
+            "batch_size": 16, #mini-batch size per GPU
             "optimizer": {
                 "class": Adam,
                 "args": {

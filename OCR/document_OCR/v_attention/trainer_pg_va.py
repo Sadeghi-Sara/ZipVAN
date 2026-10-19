@@ -39,6 +39,7 @@ from basic.utils import edit_wer_from_list, nb_chars_from_list, nb_words_from_li
 import numpy as np
 import editdistance
 import re
+from torch.amp import autocast
 
 
 class Manager(GenericTrainingManager):
@@ -57,7 +58,7 @@ class Manager(GenericTrainingManager):
         global_loss = 0
         total_loss_ctc = 0
         total_loss_ce = 0
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
 
         x = batch_data["imgs"].to(self.device)
         y = [l.to(self.device) for l in batch_data["line_labels"]]
@@ -74,43 +75,55 @@ class Manager(GenericTrainingManager):
             y_len.append([0 for _ in range(batch_size)])
 
         status = "init"
-        features = self.models["encoder"](x)
-        batch_size, c, h, w = features.size()
-        attention_weights = torch.zeros((batch_size, h), dtype=torch.float, device=self.device)
-        coverage = attention_weights.clone() if self.params["model_params"]["use_coverage_vector"] else None
-        hidden = [k for k in self.get_init_hidden(batch_size)] if self.params["model_params"]["use_hidden"] else None
 
-        line_preds = [list() for _ in range(batch_size)]
-        for i in range(num_iter):
-            context_vector, attention_weights, decision = self.models["attention"](features, attention_weights, coverage, hidden, status=status)
-            status = "inprogress"
-            coverage = coverage + attention_weights if self.params["model_params"]["use_coverage_vector"] else None
-            
-            if mode in ["fixed", "early"] or i < max_nb_lines:
-                probs, hidden = self.models["decoder"](context_vector, hidden)
-                loss_ctc = loss_ctc_func(probs.permute(2, 0, 1), y[i], x_reduced_len, y_len[i])
-                total_loss_ctc += loss_ctc.item()
-                global_loss += loss_ctc
-            
-            if mode == "learned":
-                gt_decision = torch.ones((batch_size, ), device=self.device, dtype=torch.long)
-                for j in range(batch_size):
-                    if y_len[i][j] == 0:
-                        if i > 0 and y_len[i-1][j] == 0:
-                            gt_decision[j] = self.dataset.tokens["pad"]
-                        else:
-                            gt_decision[j] = 0
-                loss_ce = loss_ce_func(decision, gt_decision)
-                total_loss_ce += loss_ce.item()
-                global_loss += loss_ce
+        with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
+            features = self.models["encoder"](x)
+            batch_size, c, h, w = features.size()
+            attention_weights = torch.zeros((batch_size, h), dtype=torch.float, device=self.device)
+            coverage = attention_weights.clone() if self.params["model_params"]["use_coverage_vector"] else None
+            hidden = [k for k in self.get_init_hidden(batch_size)] if self.params["model_params"]["use_hidden"] else None
 
-            line_pred = [torch.argmax(lp, dim=0).detach().cpu().numpy()[:x_reduced_len[j]] if y_len[i][j] > 0 else None for j, lp in enumerate(probs)]
-            for i, lp in enumerate(line_pred):
-                if lp is not None:
-                    line_preds[i].append(lp)
+            line_preds = [list() for _ in range(batch_size)]
+            for i in range(num_iter):
+                context_vector, attention_weights, decision = self.models["attention"](features, attention_weights, coverage, hidden, status=status)
+                status = "inprogress"
+                coverage = coverage + attention_weights if self.params["model_params"]["use_coverage_vector"] else None
+                
+                if mode in ["fixed", "early"] or i < max_nb_lines:
+                    probs, hidden = self.models["decoder"](context_vector, hidden)
+                    loss_ctc = loss_ctc_func(probs.permute(2, 0, 1), y[i], x_reduced_len, y_len[i])
+                    total_loss_ctc += loss_ctc.item()
+                    global_loss += loss_ctc
+                
+                if mode == "learned":
+                    gt_decision = torch.ones((batch_size, ), device=self.device, dtype=torch.long)
+                    for j in range(batch_size):
+                        if y_len[i][j] == 0:
+                            if i > 0 and y_len[i-1][j] == 0:
+                                gt_decision[j] = self.dataset.tokens["pad"]
+                            else:
+                                gt_decision[j] = 0
+                    loss_ce = loss_ce_func(decision, gt_decision)
+                    total_loss_ce += loss_ce.item()
+                    global_loss += loss_ce
+
+                line_pred = [torch.argmax(lp, dim=0).detach().cpu().numpy()[:x_reduced_len[j]] if y_len[i][j] > 0 else None for j, lp in enumerate(probs)]
+                for i, lp in enumerate(line_pred):
+                    if lp is not None:
+                        line_preds[i].append(lp)
+
+        if not torch.isfinite(global_loss):
+            print("NaN/Inf detected in training loss")
 
         self.backward_loss(global_loss)
-        self.optimizer.step()
+        if self.params["training_params"]["use_amp"]:
+
+            self.scaler.step(self.optimizer)
+
+            self.scaler.update()
+
+        else:
+            self.optimizer.step()
 
         metrics = self.compute_metrics(line_preds, batch_data["raw_labels"], metric_names, from_line=True)
         if "loss_ctc" in metric_names:
@@ -133,41 +146,44 @@ class Manager(GenericTrainingManager):
         status = "init"
         mode = self.params["training_params"]["stop_mode"]
         max_nb_lines = self.params["training_params"]["max_pred_lines"]
-        features = self.models["encoder"](x)
-        batch_size, c, h, w = features.size()
-        attention_weights = torch.zeros((batch_size, h), device=self.device, dtype=torch.float)
-        coverage = attention_weights.clone() if self.params["model_params"]["use_coverage_vector"] else None
-        hidden = [k for k in self.get_init_hidden(batch_size)] if self.params["model_params"]["use_hidden"] else None
-        preds = [list() for _ in range(batch_size)]
-        end_pred = [None for _ in range(batch_size)]
 
-        for i in range(max_nb_lines):
-            context_vector, attention_weights, decision = self.models["attention"](features, attention_weights, coverage, hidden, status=status)
-            coverage = coverage + attention_weights if self.params["model_params"]["use_coverage_vector"] else None
-            probs, hidden = self.models["decoder"](context_vector, hidden)
-            status = "inprogress"
+        with torch.no_grad():
+            with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
+                features = self.models["encoder"](x)
+                batch_size, c, h, w = features.size()
+                attention_weights = torch.zeros((batch_size, h), device=self.device, dtype=torch.float)
+                coverage = attention_weights.clone() if self.params["model_params"]["use_coverage_vector"] else None
+                hidden = [k for k in self.get_init_hidden(batch_size)] if self.params["model_params"]["use_hidden"] else None
+                preds = [list() for _ in range(batch_size)]
+                end_pred = [None for _ in range(batch_size)]
 
-            line_pred = [torch.argmax(lp, dim=0).detach().cpu().numpy()[:x_reduced_len[j]] for j, lp in enumerate(probs)]
-            if mode == "learned":
-                decision = [torch.argmax(d, dim=0) for d in decision]
-                for k, d in enumerate(decision):
-                    if d == 0 and end_pred[k] is None:
-                        end_pred[k] = i
+                for i in range(max_nb_lines):
+                    context_vector, attention_weights, decision = self.models["attention"](features, attention_weights, coverage, hidden, status=status)
+                    coverage = coverage + attention_weights if self.params["model_params"]["use_coverage_vector"] else None
+                    probs, hidden = self.models["decoder"](context_vector, hidden)
+                    status = "inprogress"
 
-            if mode in ["learned", "early"]:
-                for k, p in enumerate(line_pred):
-                    if end_pred[k] is None and np.all(p == self.dataset.tokens["blank"]):
-                        end_pred[k] = i
-            line_pred = [l if end_pred[j] is None else None for j, l in enumerate(line_pred)]
-            preds = append_preds(preds, line_pred)
-            if np.all([end_pred[k] is not None for k in range(batch_size)]):
-                break
+                    line_pred = [torch.argmax(lp, dim=0).detach().cpu().numpy()[:x_reduced_len[j]] for j, lp in enumerate(probs)]
+                    if mode == "learned":
+                        decision = [torch.argmax(d, dim=0) for d in decision]
+                        for k, d in enumerate(decision):
+                            if d == 0 and end_pred[k] is None:
+                                end_pred[k] = i
 
-        metrics = self.compute_metrics(preds, batch_data["raw_labels"], metric_names, from_line=True)
-        if "diff_len" in metric_names:
-            end_pred = [end_pred[k] if end_pred[k] is not None else i for k in range(len(end_pred))]
-            diff_len = np.array(end_pred)-np.array(batch_data["nb_lines"])
-            metrics["diff_len"] = diff_len
+                    if mode in ["learned", "early"]:
+                        for k, p in enumerate(line_pred):
+                            if end_pred[k] is None and np.all(p == self.dataset.tokens["blank"]):
+                                end_pred[k] = i
+                    line_pred = [l if end_pred[j] is None else None for j, l in enumerate(line_pred)]
+                    preds = append_preds(preds, line_pred)
+                    if np.all([end_pred[k] is not None for k in range(batch_size)]):
+                        break
+
+                metrics = self.compute_metrics(preds, batch_data["raw_labels"], metric_names, from_line=True)
+                if "diff_len" in metric_names:
+                    end_pred = [end_pred[k] if end_pred[k] is not None else i for k in range(len(end_pred))]
+                    diff_len = np.array(end_pred)-np.array(batch_data["nb_lines"])
+                    metrics["diff_len"] = diff_len
         return metrics
 
     def ctc_remove_successives_identical_ind(self, ind):
