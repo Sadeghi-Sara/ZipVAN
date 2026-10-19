@@ -48,6 +48,7 @@ from tqdm import tqdm
 from time import time
 from torch.nn.parallel import DistributedDataParallel as tDDP
 from basic.generic_dataset_manager import DatasetManager
+from basic.train_logger import ClipMonitor, EpochProgress, TrainLog, format_metrics, model_summary
 
 
 class GenericTrainingManager:
@@ -445,13 +446,22 @@ class GenericTrainingManager:
         if self.is_master:
             self.writer = SummaryWriter(self.paths["results"])
             self.save_params()
+            self.train_log = TrainLog(os.path.join(self.paths["results"], "train_log.txt"))
+            print(model_summary(self.models), flush=True)
+        self.clip_monitor = ClipMonitor.install()
 
         # init variables
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         self.begin_time = time()
         self.train_start_time = self.begin_time
+        epoch_line = None
         focus_metric_name = self.params["training_params"]["focus_metric"]
+        # best result shown on the live line; restored from the checkpoint when resuming
+        self.best_text = None
+        if self.best is not None:
+            # checkpoints store only the focus metric, so WER is not available here
+            self.best_text = "best val {} (resumed)".format(format_metrics({focus_metric_name: self.best}))
         nb_epochs = self.params["training_params"]["max_nb_epochs"]
         interval_save_weights = self.params["training_params"]["interval_save_weights"]
         metrics_name = self.params["training_params"]["train_metrics"]
@@ -470,10 +480,10 @@ class GenericTrainingManager:
             self.latest_epoch = num_epoch
             # init epoch metrics values
             metrics = self.init_metrics(metrics_name)
-            t = tqdm(self.dataset.train_loader)
-            t.set_description("EPOCH {}/{}".format(num_epoch, nb_epochs))
+            progress = EpochProgress(self.dataset.train_loader, num_epoch, nb_epochs, enabled=self.is_master,
+                                     sticky={"best": self.best_text} if self.best_text else None)
             # iterates over mini-batch data
-            for ind_batch, batch_data in enumerate(t):
+            for ind_batch, batch_data in enumerate(progress):
                 self.latest_batch = ind_batch + 1
                 self.total_batch += 1
                 # train on batch data and compute metrics
@@ -489,12 +499,16 @@ class GenericTrainingManager:
                 # Add batch metrics values to epoch metrics values
                 metrics = self.update_metrics(metrics, batch_metrics)
                 display_values = self.get_display_values(metrics, metrics_name, ind_batch)
-                t.set_postfix(values=str(display_values))
+                progress.live(ind_batch, display_values)
             # log metrics in tensorboard file
             if self.is_master:
                 for key in display_values.keys():
                     self.writer.add_scalar('{}_{}'.format(self.params["dataset_params"]["train"]["name"], key), display_values[key], num_epoch)
+                self.writer.add_scalar("optim/lr", self.optimizer.param_groups[0]["lr"], num_epoch)
             self.latest_train_metrics = display_values
+            progress.set("train", format_metrics(display_values), refresh=False)
+            progress.set("lr", "lr %.2e" % self.optimizer.param_groups[0]["lr"], refresh=False)
+            progress.set("clip", self.clip_monitor.epoch_text())
 
             # Handle curriculum learning update
             if self.dataset.train_dataset.curriculum_config:
@@ -506,6 +520,7 @@ class GenericTrainingManager:
                     # evaluate set and compute metrics
                     eval_values = self.evaluate(valid_set_name)
                     self.latest_valid_metrics = eval_values
+                    is_best = False
                     # log valid metrics in tensorboard file
                     if self.is_master:
                         for key in eval_values.keys():
@@ -515,6 +530,16 @@ class GenericTrainingManager:
                                 (eval_values[focus_metric_name] > self.best and self.params["training_params"]["expected_metric_value"] == "high")):
                             self.save_model(epoch=num_epoch, name="best")
                             self.best = eval_values[focus_metric_name]
+                            is_best = True
+                            best_values = {k: eval_values[k] for k in ("cer", "wer") if k in eval_values}
+                            self.best_text = "best val {} @{}".format(format_metrics(best_values), num_epoch)
+                            progress.set("best", self.best_text, refresh=False)
+                    progress.set("val", "val " + format_metrics(eval_values) + (" *" if is_best else ""))
+
+            # erase the live line and append the full epoch line to results/train_log.txt
+            epoch_line = progress.close()
+            if self.is_master:
+                self.train_log.write(epoch_line)
 
             ## save model weights
             if self.is_master:
@@ -526,6 +551,12 @@ class GenericTrainingManager:
             # save final params after training
             #if self.is_master:
             #    self.save_params()
+
+        # the live line is erased after every epoch: print the last epoch and the best result once
+        if self.is_master and epoch_line:
+            print(epoch_line, flush=True)
+            if self.best_text:
+                print(self.best_text, flush=True)
 
         #FINAL STATS (runtime + GPU memory)
 
@@ -574,8 +605,7 @@ class GenericTrainingManager:
         display_values = None
         # initialize epoch metrics
         metrics = self.init_metrics(metrics_name)
-        t = tqdm(loader)
-        t.set_description("Evaluation E{}".format(self.latest_epoch))
+        t = tqdm(loader, desc="Validation", leave=False, dynamic_ncols=True, disable=not self.is_master)
         with torch.no_grad():
             # iterate over batch data
             for ind_batch, batch_data in enumerate(t):
@@ -590,7 +620,7 @@ class GenericTrainingManager:
                 # add batch metrics to epoch metrics
                 metrics = self.update_metrics(metrics, batch_metrics)
                 display_values = self.get_display_values(metrics, metrics_name, ind_batch)
-                t.set_postfix(values=str(display_values))
+                t.set_postfix_str(format_metrics(display_values))
         return display_values
 
     def predict(self, custom_name, sets_list, metrics_name, output=False):
@@ -606,8 +636,7 @@ class GenericTrainingManager:
             pred_time_metric = True
         # initialize epoch metrics
         metrics = self.init_metrics(metrics_name)
-        t = tqdm(loader)
-        t.set_description("Prediction")
+        t = tqdm(loader, desc="Predict {}".format(custom_name), leave=False, dynamic_ncols=True, disable=not self.is_master)
         begin_time = time()
         with torch.no_grad():
             for ind_batch, batch_data in enumerate(t):
@@ -623,7 +652,7 @@ class GenericTrainingManager:
                 # add batch metrics to epoch metrics
                 metrics = self.update_metrics(metrics, batch_metrics)
                 display_values = self.get_display_values(metrics, metrics_name, ind_batch)
-                t.set_postfix(values=str(display_values))
+                t.set_postfix_str(format_metrics(display_values))
         pred_time = time() - begin_time
         # add time metric values if requested
         if pred_time_metric:
