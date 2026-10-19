@@ -41,6 +41,7 @@ from basic.models import FCN_Encoder
 from basic.generic_dataset_manager import OCRDataset
 import torch
 import torch.multiprocessing as mp
+from glob import glob
 
 
 def train_and_test(rank, params):
@@ -64,6 +65,11 @@ def train_and_test(rank, params):
 if __name__ == "__main__":
 
     dataset_name = "IAM"  # ["RIMES", "IAM", "READ_2016"]
+
+    # encoder and decoder are initialized from the line-level baseline (main_line_ctc.py)
+    line_checkpoint = glob("../../line_OCR/ctc/outputs/fcn_iam_line/checkpoints/best_*.pt")
+    assert len(line_checkpoint) == 1, \
+        "expected one line-level best_*.pt checkpoint, found {}".format(line_checkpoint)
 
     params = {
         "dataset_params": {
@@ -151,13 +157,11 @@ if __name__ == "__main__":
                 "attention": VerticalAttention,
                 "decoder": LineDecoderCTC,
             },
-            "transfer_learning": None,
-            # "transfer_learning": {
-            #     # model_name: [state_dict_name, checkpoint_path, learnable, strict]
-            #     "encoder": ["encoder", "../../line_OCR/ctc/outputs/iam/checkpoints/best_XX.pt", True, True],
-            #     "decoder": ["decoder", "../../line_OCR/ctc/outputs/iam/checkpoints/best_XX.pt", True, True],
-            #
-            # },
+            "transfer_learning": {
+                # model_name: [state_dict_name, checkpoint_path, learnable, strict]
+                "encoder": ["encoder", line_checkpoint[0], True, True],
+                "decoder": ["decoder", line_checkpoint[0], True, True],
+            },
             "input_channels": 3,  # 3 for RGB images, 1 for grayscale images
 
             # dropout probability for standard dropout (half dropout probability is taken for spatial dropout)
@@ -194,6 +198,7 @@ if __name__ == "__main__":
             "use_ddp": False,  # Use DistributedDataParallel
             "ddp_port": "10000",  # Port for Distributed Data Parallel communications
             "use_amp": True,  # Enable mixed precision with torch.amp
+            "manual_seed": 1111,
             "nb_gpu": torch.cuda.device_count(),
             "optimizer": {
                 "class": Adam,

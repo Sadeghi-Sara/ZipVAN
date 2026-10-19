@@ -191,12 +191,12 @@ if __name__ == "__main__":
             "output_folder": "fcn_iam_line",  # folder names for logs and weigths
             "max_nb_epochs": 5000,  # max number of epochs for the training
             "completed_epochs" : None,
-            "max_training_time": 3600 * 24 * 7,  # max training time limit (in seconds)
+            "max_training_time": 3600 * (24 + 7),  # max training time limit (in seconds)
             "load_epoch": "best",  # ["best", "last"], to load weights from best epoch or last trained epoch
             "interval_save_weights": None,  # None: keep best and last only
             "use_ddp": False,  # Use DistributedDataParallel
             "use_amp": False,  # full fp32 for the line baseline
-            "manual_seed": 2222,
+            "manual_seed": 1111,
             "nb_gpu": torch.cuda.device_count(),
             "total_runtime_sec": None,
             "total_runtime_hours": None,
