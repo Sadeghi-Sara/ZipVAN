@@ -46,6 +46,19 @@ from PIL import Image
 import cv2
 import copy
 import torch
+import random
+
+
+
+def seed_worker(worker_id):
+    """Re-seed numpy/random inside each DataLoader worker process.
+
+    torch already gives every worker a distinct, generator-derived base seed;
+    this propagates it to the RNGs used by the augmentation pipeline.
+    """
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 class DatasetManager:
@@ -69,6 +82,9 @@ class DatasetManager:
         self.train_sampler = None
         self.valid_samplers = dict()
         self.test_samplers = dict()
+
+        # One RNG per DataLoader; see make_generator().
+        self.generators = dict()
 
         self.charset = self.get_merged_charsets()
         self.load_datasets()
@@ -135,18 +151,38 @@ class DatasetManager:
             for custom_name in self.valid_datasets.keys():
                 self.valid_samplers[custom_name] = None
 
+    def make_generator(self, offset):
+        """One independent, deterministically seeded generator per DataLoader.
+
+        Sharing a single generator across train/valid/test couples them: every
+        iter() on any loader draws a worker base seed from it, so the training
+        shuffle order would depend on how often validation ran. Distinct offsets
+        keep each loader's stream independent and resume-safe.
+        """
+        g = torch.Generator()
+        g.manual_seed(int(self.params.get("manual_seed", 2222))
+                      + int(self.params.get("ddp_rank", 0))
+                      + int(offset))
+        return g
+
     def load_dataloaders(self):
+        self.generators["train"] = self.make_generator(0)
         self.train_loader = DataLoader(self.train_dataset, batch_size=self.params["batch_size"],
                                        shuffle=True if not self.train_sampler else False,
                                        sampler=self.train_sampler,
                                        num_workers=self.params["num_gpu"], pin_memory=True, drop_last=False,
-                                       collate_fn=self.my_collate_function)
+                                       collate_fn=self.my_collate_function,
+                                       worker_init_fn=seed_worker,
+                                       generator=self.generators["train"])
 
-        for key in self.valid_datasets.keys():
+        for i, key in enumerate(self.valid_datasets.keys()):
+            self.generators["valid_" + key] = self.make_generator(1000 + i)
             self.valid_loaders[key] = DataLoader(self.valid_datasets[key], batch_size=self.params["batch_size"],
                                                  sampler=self.valid_samplers[key],
                                                  shuffle=False, num_workers=self.params["num_gpu"], pin_memory=True,
-                                                 drop_last=False, collate_fn=self.my_collate_function)
+                                                 drop_last=False, collate_fn=self.my_collate_function,
+                                                 worker_init_fn=seed_worker,
+                                                 generator=self.generators["valid_" + key])
 
     def generate_test_loader(self, custom_name, sets_list):
         if custom_name in self.test_loaders.keys():
@@ -164,10 +200,13 @@ class DatasetManager:
                                                              num_replicas=self.params["num_gpu"],
                                                              rank=self.params["ddp_rank"], shuffle=False) \
             if self.params["use_ddp"] else None
+        self.generators["test_" + custom_name] = self.make_generator(2000 + len(self.test_loaders))
         self.test_loaders[custom_name] = DataLoader(self.test_datasets[custom_name], batch_size=self.params["batch_size"],
                                                     sampler=self.test_samplers[custom_name],
                                                     shuffle=False, num_workers=self.params["num_gpu"], pin_memory=True,
-                                                    drop_last=False, collate_fn=self.my_collate_function)
+                                                    drop_last=False, collate_fn=self.my_collate_function,
+                                                    worker_init_fn=seed_worker,
+                                                    generator=self.generators["test_" + custom_name])
 
     def get_paths_and_sets(self, set_name, dataset_names):
         paths_and_sets = list()

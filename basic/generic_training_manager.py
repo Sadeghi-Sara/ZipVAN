@@ -97,6 +97,8 @@ class GenericTrainingManager:
         self.params["dataset_params"]["use_ddp"] = self.params["training_params"]["use_ddp"]
         self.params["dataset_params"]["batch_size"] = self.params["training_params"]["batch_size"]
         self.params["dataset_params"]["num_gpu"] = self.params["training_params"]["nb_gpu"]
+        self.params["dataset_params"]["manual_seed"] = self.manual_seed
+        self.params["dataset_params"]["ddp_rank"] = self.params["training_params"].get("ddp_rank", 0)
         self.dataset = DatasetManager(self.params["dataset_params"])
         if self.dataset.charset:
             self.params["model_params"]["vocab_size"] = len(self.dataset.charset)
@@ -116,6 +118,13 @@ class GenericTrainingManager:
             "backend": "nccl" if "ddp_backend" not in self.params["training_params"].keys() else self.params["training_params"]["ddp_backend"],
             "rank": self.params["training_params"]["ddp_rank"],
         }
+
+        # Reproducibility defaults can be overridden from training_params.
+        self.params["training_params"].setdefault("deterministic", True)
+        self.params["training_params"].setdefault("strict_determinism", False)
+
+        self.set_global_reproducibility()
+
         self.is_master = self.ddp_config["master"] or not self.params["training_params"]["use_ddp"]
         if self.params["training_params"]["force_cpu"]:
             self.device = "cpu"
@@ -142,6 +151,28 @@ class GenericTrainingManager:
         else:
             print("WORKING ON CPU !\n")
         print("##################")
+
+    def set_global_reproducibility(self):
+        deterministic = self.params["training_params"].get("deterministic", True)
+
+        # Seed all RNGs used by Python, NumPy and PyTorch.
+        random.seed(self.manual_seed)
+        np.random.seed(self.manual_seed)
+        torch.manual_seed(self.manual_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(self.manual_seed)
+            torch.cuda.manual_seed_all(self.manual_seed)
+
+        if deterministic:
+            # cuBLAS requires this env var for deterministic reductions.
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+
+            # Keep strict mode optional because some ops can raise on certain GPUs.
+            torch.use_deterministic_algorithms(self.params["training_params"].get("strict_determinism", False))
 
     def load_model(self, reset_optimizer=False):
         def to_DDP(model, rank):
