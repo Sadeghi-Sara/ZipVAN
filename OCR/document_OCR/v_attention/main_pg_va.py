@@ -192,7 +192,7 @@ if __name__ == "__main__":
             "max_nb_epochs": 5000,  # max number of epochs for the training
             "completed_epochs" : None,
             "max_training_time": 3600 * 24 * 7,  # max training time limit (in seconds)
-            "load_epoch": "best",  # ["best", "last"], to load weights from best epoch or last trained epoch
+            "load_epoch": "last",  # ["best", "last"], to load weights from best epoch or last trained epoch
             "interval_save_weights": None,  # None: keep best and last only
             "batch_size": 8,  # mini-batch size per GPU
             "use_ddp": False,  # Use DistributedDataParallel
