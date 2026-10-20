@@ -189,7 +189,9 @@ class GenericTrainingManager:
         # Instanciate optimizer
         self.reset_optimizer()
         if "lr_scheduler" in self.params["training_params"] and self.params["training_params"]["lr_scheduler"]:
-            self.lr_scheduler = self.params["training_params"]["lr_scheduler"]["type"](self.optimizer, gamma=self.params["training_params"]["lr_scheduler"]["gamma"])
+            scheduler = self.params["training_params"]["lr_scheduler"]
+            args = scheduler["args"] if "args" in scheduler else {"gamma": scheduler["gamma"]}
+            self.lr_scheduler = scheduler["type"](self.optimizer, **args)
 
         # Load previous weights
         checkpoint = None
@@ -293,10 +295,14 @@ class GenericTrainingManager:
         Reset optimizer learning rate
         """
         parameters = list()
+        optimizer_class = self.params["training_params"]["optimizer"]["class"]
         for model_name in self.models.keys():
-            parameters += list(self.models[model_name].parameters())
-        self.optimizer = self.params["training_params"]["optimizer"]["class"]\
-            (parameters, **self.params["training_params"]["optimizer"]["args"])
+            if optimizer_class.__name__ == "ScaledAdam":
+                # ScaledAdam uses the parameter names in its clipping diagnostics
+                parameters += list(self.models[model_name].named_parameters())
+            else:
+                parameters += list(self.models[model_name].parameters())
+        self.optimizer = optimizer_class(parameters, **self.params["training_params"]["optimizer"]["args"])
 
 
     @staticmethod
@@ -474,6 +480,8 @@ class GenericTrainingManager:
             for model_name in self.models.keys():
                 self.models[model_name].train()
             self.latest_epoch = num_epoch
+            if self.lr_scheduler and hasattr(self.lr_scheduler, "step_epoch"):
+                self.lr_scheduler.step_epoch(num_epoch)
             # init epoch metrics values
             metrics = self.init_metrics(metrics_name)
             progress = EpochProgress(self.dataset.train_loader, num_epoch, nb_epochs, enabled=self.is_master,
@@ -490,8 +498,11 @@ class GenericTrainingManager:
                 if self.params["training_params"]["use_ddp"]:
                     batch_metrics = self.merge_ddp_metrics(batch_metrics)
                 # Update learning rate via scheduler if one is used
-                if self.lr_scheduler and ind_batch % self.params["training_params"]["lr_scheduler"]["step_interval"] == 0:
-                    self.lr_scheduler.step()
+                if self.lr_scheduler:
+                    if hasattr(self.lr_scheduler, "step_batch"):
+                        self.lr_scheduler.step_batch()
+                    elif ind_batch % self.params["training_params"]["lr_scheduler"]["step_interval"] == 0:
+                        self.lr_scheduler.step()
                 # Add batch metrics values to epoch metrics values
                 metrics = self.update_metrics(metrics, batch_metrics)
                 display_values = self.get_display_values(metrics, metrics_name, ind_batch)

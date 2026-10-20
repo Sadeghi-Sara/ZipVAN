@@ -54,13 +54,18 @@ class TrainerLineCTC(GenericTrainingManager):
             res.append(i)
         return res
 
+    def ctc_loss(self):
+        return CTCLoss(blank=self.dataset.tokens["blank"],
+                       reduction=self.params["training_params"].get("ctc_reduction", "sum"),
+                       zero_infinity=self.params["training_params"].get("ctc_zero_infinity", False))
+
     def train_batch(self, batch_data, metric_names):
         x = batch_data["imgs"].to(self.device)
         y = batch_data["labels"].to(self.device)
         x_reduced_len = [s[1] for s in batch_data["imgs_reduced_shape"]]
         y_len = batch_data["labels_len"]
 
-        loss_ctc = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
+        loss_ctc = self.ctc_loss()
         self.optimizer.zero_grad(set_to_none=True)
 
         with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
@@ -70,8 +75,9 @@ class TrainerLineCTC(GenericTrainingManager):
             loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
 
         pred = torch.argmax(global_pred, dim=1).cpu().numpy()
-        if torch.isnan(loss):
-            print("NaN detected")
+        if not torch.isfinite(loss):
+            print("Non-finite loss, batch skipped: {}".format(batch_data["names"]), flush=True)
+            return self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=0.0, metric_names=metric_names)
 
         self.backward_loss(loss)
 
@@ -90,7 +96,7 @@ class TrainerLineCTC(GenericTrainingManager):
         x_reduced_len = [s[1] for s in batch_data["imgs_reduced_shape"]]
         y_len = batch_data["labels_len"]
 
-        loss_ctc = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
+        loss_ctc = self.ctc_loss()
 
         with torch.no_grad():
             with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
@@ -128,6 +134,10 @@ class TrainerLineCTC(GenericTrainingManager):
             elif metric_name == "pred":
                 metrics["pred"] = [str_x, ]
         if "loss_ctc" in metric_names:
-            metrics["loss_ctc"] = loss / metrics["nb_chars"]
+            # with reduction="mean" the loss is already divided by the number of characters
+            if self.params["training_params"].get("ctc_reduction", "sum") == "sum":
+                metrics["loss_ctc"] = loss / metrics["nb_chars"]
+            else:
+                metrics["loss_ctc"] = loss
         metrics["nb_samples"] = len(x)
         return metrics

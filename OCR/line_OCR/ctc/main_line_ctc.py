@@ -41,13 +41,19 @@ from torch.optim import Adam
 from basic.generic_dataset_manager import OCRDataset
 import torch.multiprocessing as mp
 import torch
+import argparse
+from basic.presets import LINE_PRESETS, apply_preset
 
 
 def train_and_test(rank, params):
     params["training_params"]["ddp_rank"] = rank
     model = TrainerLineCTC(params)
-    # Model trains until max_time_training or max_nb_epochs is reached
-    model.train()
+    if params["training_params"].get("eval_only", False):
+        if model.latest_epoch < 0:
+            raise SystemExit("no checkpoint in {}".format(model.paths["checkpoints"]))
+    else:
+        # Model trains until max_time_training or max_nb_epochs is reached
+        model.train()
 
     # load weights giving best CER on valid set
     model.params["training_params"]["load_epoch"] = "best"
@@ -184,6 +190,22 @@ if __name__ == "__main__":
             "force_cpu": False,  # True for debug purposes to run on cpu only
         },
     }
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preset", default="van", choices=list(LINE_PRESETS.keys()))
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output_folder", default=None, help="default: <preset>_seed<seed>, fcn_iam_line for van")
+    parser.add_argument("--eval_only", action="store_true", help="evaluate the best checkpoint of the output folder")
+    args = parser.parse_args()
+
+    apply_preset(params, *LINE_PRESETS[args.preset])
+    if args.seed is not None:
+        params["training_params"]["manual_seed"] = args.seed
+    if args.output_folder:
+        params["training_params"]["output_folder"] = args.output_folder
+    elif args.preset != "van":
+        params["training_params"]["output_folder"] = "{}_seed{}".format(args.preset, params["training_params"]["manual_seed"])
+    params["training_params"]["eval_only"] = args.eval_only
 
     if params["training_params"]["use_ddp"] and not params["training_params"]["force_cpu"]:
         mp.spawn(train_and_test, args=(params,), nprocs=params["training_params"]["nb_gpu"])
