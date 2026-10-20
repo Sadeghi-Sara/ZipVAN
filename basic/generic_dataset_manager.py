@@ -49,13 +49,8 @@ import torch
 import random
 
 
-
 def seed_worker(worker_id):
-    """Re-seed numpy/random inside each DataLoader worker process.
-
-    torch already gives every worker a distinct, generator-derived base seed;
-    this propagates it to the RNGs used by the augmentation pipeline.
-    """
+    # numpy and random are used by the augmentations: seed them from the seed torch gives the worker
     worker_seed = torch.initial_seed() % (2 ** 32)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
@@ -83,7 +78,6 @@ class DatasetManager:
         self.valid_samplers = dict()
         self.test_samplers = dict()
 
-        # One RNG per DataLoader; see make_generator().
         self.generators = dict()
 
         self.charset = self.get_merged_charsets()
@@ -152,13 +146,7 @@ class DatasetManager:
                 self.valid_samplers[custom_name] = None
 
     def make_generator(self, offset):
-        """One independent, deterministically seeded generator per DataLoader.
-
-        Sharing a single generator across train/valid/test couples them: every
-        iter() on any loader draws a worker base seed from it, so the training
-        shuffle order would depend on how often validation ran. Distinct offsets
-        keep each loader's stream independent and resume-safe.
-        """
+        # one generator per loader, so that the training order does not depend on validation
         g = torch.Generator()
         g.manual_seed(int(self.params.get("manual_seed", 2222))
                       + int(self.params.get("ddp_rank", 0))

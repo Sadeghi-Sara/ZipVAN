@@ -63,14 +63,13 @@ class TrainerLineCTC(GenericTrainingManager):
         loss_ctc = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
         self.optimizer.zero_grad(set_to_none=True)
 
-        # AMP forward
         with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
-
             x = self.models["encoder"](x)
             global_pred = self.models["decoder"](x)
 
             loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
 
+        pred = torch.argmax(global_pred, dim=1).cpu().numpy()
         if torch.isnan(loss):
             print("NaN detected")
 
@@ -81,8 +80,6 @@ class TrainerLineCTC(GenericTrainingManager):
             self.scaler.update()
         else:
             self.optimizer.step()
-
-        pred = torch.argmax(global_pred, dim=1).cpu().numpy()
 
         metrics = self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=loss.item(), metric_names=metric_names)
         return metrics
@@ -104,7 +101,6 @@ class TrainerLineCTC(GenericTrainingManager):
                 loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
 
                 if not torch.isfinite(loss):
-                    print("NaN detected in eval")
                     loss = torch.tensor(0.0, device=self.device)
 
         pred = torch.argmax(global_pred, dim=1).cpu().numpy()

@@ -120,7 +120,6 @@ class GenericTrainingManager:
             "rank": self.params["training_params"]["ddp_rank"],
         }
 
-        # Reproducibility defaults can be overridden from training_params.
         self.params["training_params"].setdefault("deterministic", True)
         self.params["training_params"].setdefault("strict_determinism", False)
 
@@ -156,7 +155,6 @@ class GenericTrainingManager:
     def set_global_reproducibility(self):
         deterministic = self.params["training_params"].get("deterministic", True)
 
-        # Seed all RNGs used by Python, NumPy and PyTorch.
         random.seed(self.manual_seed)
         np.random.seed(self.manual_seed)
         torch.manual_seed(self.manual_seed)
@@ -165,14 +163,13 @@ class GenericTrainingManager:
             torch.cuda.manual_seed_all(self.manual_seed)
 
         if deterministic:
-            # cuBLAS requires this env var for deterministic reductions.
+            # required by cuBLAS for deterministic results
             os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
             torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = True
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
 
-            # Keep strict mode optional because some ops can raise on certain GPUs.
             torch.use_deterministic_algorithms(self.params["training_params"].get("strict_determinism", False))
 
     def load_model(self, reset_optimizer=False):
@@ -201,8 +198,6 @@ class GenericTrainingManager:
                 # Continue training
                 if self.params["training_params"]["load_epoch"] in filename:
                     checkpoint_path = os.path.join(self.paths["checkpoints"], filename)
-                    #checkpoint = torch.load(checkpoint_path)
-                    #checkpoint = torch.load(checkpoint_path, weights_only=False)
                     checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=self.device)
                     self.load_save_info(checkpoint)
                     self.latest_epoch = checkpoint["epoch"]
@@ -237,7 +232,6 @@ class GenericTrainingManager:
                 for model_name in self.params["model_params"]["transfer_learning"].keys():
                     state_dict_name, path, learnable, strict = self.params["model_params"]["transfer_learning"][model_name]
                     # Loading pretrained weights file
-                    #checkpoint = torch.load(path)
                     checkpoint = torch.load(path, weights_only=False, map_location=self.device)
                     try:
                         # Load pretrained weights for model
@@ -441,6 +435,10 @@ class GenericTrainingManager:
         else:
             loss.backward(retain_graph=retain_graph)
 
+    def passes_per_sample(self):
+        # forward-backward passes per training sample, the x-axis unit of the compute/ curves
+        return 1
+
     def train(self):
         # init tensorboard file and output param summary file
         if self.is_master:
@@ -457,10 +455,8 @@ class GenericTrainingManager:
         self.train_start_time = self.begin_time
         epoch_line = None
         focus_metric_name = self.params["training_params"]["focus_metric"]
-        # best result shown on the live line; restored from the checkpoint when resuming
         self.best_text = None
         if self.best is not None:
-            # checkpoints store only the focus metric, so WER is not available here
             self.best_text = "best val {} (resumed)".format(format_metrics({focus_metric_name: self.best}))
         nb_epochs = self.params["training_params"]["max_nb_epochs"]
         interval_save_weights = self.params["training_params"]["interval_save_weights"]
@@ -525,6 +521,8 @@ class GenericTrainingManager:
                     if self.is_master:
                         for key in eval_values.keys():
                             self.writer.add_scalar('{}_{}'.format(valid_set_name, key), eval_values[key], num_epoch)
+                            self.writer.add_scalar('compute/{}_{}'.format(valid_set_name, key), eval_values[key],
+                                                   (num_epoch + 1) * self.passes_per_sample())
                         if valid_set_name == self.params["training_params"]["set_name_focus_metric"] and (self.best is None or \
                                 (eval_values[focus_metric_name] < self.best and self.params["training_params"]["expected_metric_value"] == "low") or\
                                 (eval_values[focus_metric_name] > self.best and self.params["training_params"]["expected_metric_value"] == "high")):
@@ -536,7 +534,7 @@ class GenericTrainingManager:
                             progress.set("best", self.best_text, refresh=False)
                     progress.set("val", "val " + format_metrics(eval_values) + (" *" if is_best else ""))
 
-            # erase the live line and append the full epoch line to results/train_log.txt
+            # one line per epoch in results/train_log.txt
             epoch_line = progress.close()
             if self.is_master:
                 self.train_log.write(epoch_line)
@@ -548,17 +546,10 @@ class GenericTrainingManager:
                     self.save_model(epoch=num_epoch, name="weigths", keep_weights=True)
                 self.writer.flush()
 
-            # save final params after training
-            #if self.is_master:
-            #    self.save_params()
-
-        # the live line is erased after every epoch: print the last epoch and the best result once
         if self.is_master and epoch_line:
             print(epoch_line, flush=True)
             if self.best_text:
                 print(self.best_text, flush=True)
-
-        #FINAL STATS (runtime + GPU memory)
 
         total_time_sec = time() - self.train_start_time
 
@@ -569,7 +560,6 @@ class GenericTrainingManager:
             peak_alloc_gb = 0
             peak_reserved_gb = 0
 
-        # store in trainer (NOT just params)
         self.total_runtime_sec = round(total_time_sec, 2)
         self.total_runtime_hours = round(total_time_sec / 3600, 4)
         self.completed_epochs = max(1, self.latest_epoch + 1)
@@ -577,7 +567,6 @@ class GenericTrainingManager:
         self.peak_gpu_allocated_gb = round(peak_alloc_gb, 2)
         self.peak_gpu_reserved_gb = round(peak_reserved_gb, 2)
 
-        # also store inside params for convenience/logging
         self.params["training_params"]["total_runtime_sec"] = self.total_runtime_sec
         self.params["training_params"]["total_runtime_hours"] = self.total_runtime_hours
         self.params["training_params"]["peak_gpu_allocated_gb"] = self.peak_gpu_allocated_gb
@@ -585,17 +574,11 @@ class GenericTrainingManager:
         self.params["training_params"]["average_runtime_per_epoch"] = self.average_runtime_per_epoch
         self.params["training_params"]["completed_epochs"] = self.completed_epochs
 
-        # print summary
         if self.is_master:
             self.save_params()
-            print("\n==================== TRAINING STATS ====================")
-            print("Total time (sec):", self.total_runtime_sec)
-            print("Total time (hours):", self.total_runtime_hours)
-            print("Average time per epoch (sec):", self.average_runtime_per_epoch)
-            print("Peak GPU allocated (GB):", self.peak_gpu_allocated_gb)
-            print("Peak GPU reserved (GB):", self.peak_gpu_reserved_gb)
-            print("========================================================\n")
-            
+            print("Training time: {:.2f} h, {:.1f} s per epoch. Peak GPU memory: {:.2f} GB allocated, {:.2f} GB reserved".format(
+                self.total_runtime_hours, self.average_runtime_per_epoch, self.peak_gpu_allocated_gb, self.peak_gpu_reserved_gb))
+
     def evaluate(self, set_name, **kwargs):
         loader = self.dataset.valid_loaders[set_name]
         # Set models in eval mode
@@ -739,8 +722,6 @@ class GenericTrainingManager:
         for filename in os.listdir(self.paths["checkpoints"]):
             if load_mode in filename:
                 checkpoint_path = os.path.join(self.paths["checkpoints"], filename)
-                #checkpoint = torch.load(checkpoint_path)
-                #checkpoint = torch.load(checkpoint_path, weights_only=False)
                 checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=self.device)
                 for key in kwargs.keys():
                     checkpoint[key] = kwargs[key]

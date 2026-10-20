@@ -54,7 +54,6 @@ def train_and_test(rank, params):
     model.params["training_params"]["load_epoch"] = "best"
     model.load_model()
 
-
     # compute metrics on train, valid and test sets (in eval conditions)
     metrics = ["cer", "wer", "diff_len", "time", "worst_cer"]
     for dataset_name in params["dataset_params"]["datasets"].keys():

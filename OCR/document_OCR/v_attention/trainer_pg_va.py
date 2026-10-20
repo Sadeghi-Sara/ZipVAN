@@ -117,11 +117,8 @@ class Manager(GenericTrainingManager):
 
         self.backward_loss(global_loss)
         if self.params["training_params"]["use_amp"]:
-
             self.scaler.step(self.optimizer)
-
             self.scaler.update()
-
         else:
             self.optimizer.step()
 

@@ -1,17 +1,6 @@
 """
-Concise training logs for VAN.
-
-Screen: ONE live line that is replaced every epoch (nothing piles up):
-
-  Epoch  85/500 ━━━━━━━━━━━━ 288/1621 00:09<00:42 31.5it/s | ctc 2.979 cer 0.7905 wer 0.9789 | best val cer 0.0341 wer 0.1210 @84 | clip 0.0%
-
-File (results/train_log.txt): one permanent line per epoch, with everything:
-
-  Epoch  85/500 |   52s | ctc 2.979 cer 0.7905 wer 0.9789 | lr 2.92e-02 | clip 0.0% | val cer 0.0341 wer 0.1210 *
-
-- a model summary table when training starts
-- ScaledAdam's clipping warnings are swallowed and reported as one per-epoch
-  percentage (plus a count of strong clips, where gradients were scaled < 0.5)
+Training logs: one progress line per epoch on screen (replaced by the next epoch),
+and one line per epoch in results/train_log.txt.
 """
 import logging
 import re
@@ -20,19 +9,14 @@ import shutil
 from tqdm import tqdm
 
 BAR_FORMAT = "{desc} {bar:10} {n_fmt}/{total_fmt} {elapsed}<{remaining} {metrics}"
-# width of everything in BAR_FORMAT except {metrics}; used to truncate the metrics
-# so the line never exceeds the terminal and wraps (a wrapped tqdm line garbles
-# itself, because \r only returns to the start of the last visual row).
+# width of BAR_FORMAT without {metrics}, used to keep the line shorter than the terminal
 BAR_OVERHEAD = 48
-SCREEN_SECTIONS = ("train", "best", "clip")            # kept short so the line is not cut off
+SCREEN_SECTIONS = ("train", "best", "clip")
 FILE_SECTIONS = ("train", "lr", "clip", "val")
 SHORT_NAMES = {"loss_ctc": "ctc", "loss_ce": "ce", "loss_ce_end": "ce_end"}
 
 
-# --------------------------------------------------------------------------- #
 def format_metrics(values):
-    """{'loss_ctc': 25.01, 'cer': 0.7512, ...} -> 'ctc 25.010 cer 0.7512 ...'
-    CER/WER are shown as fractions, like in the predict_*.txt files (WER can exceed 1)."""
     parts = []
     for key, value in values.items():
         name = SHORT_NAMES.get(key, key)
@@ -47,12 +31,10 @@ def format_metrics(values):
     return " ".join(parts)
 
 
-# --------------------------------------------------------------------------- #
 class ClipMonitor(logging.Filter):
-    """Swallows ScaledAdam's gradient-clipping warnings and keeps per-epoch stats.
-
-    ScaledAdam logs 'percent-clipped=X' once every clipping_update_period (100)
-    steps, and 'Scaling gradients by ...' whenever a step is scaled below 0.5.
+    """
+    Hides the gradient clipping warnings of ScaledAdam and keeps, per epoch, the mean
+    clipped percentage and the number of steps scaled by less than 0.5.
     """
     _PCT = re.compile(r"percent-clipped=([0-9.]+)")
     _SWALLOW = ("Clipping_scale=", "Scaling gradients by",
@@ -89,7 +71,6 @@ class ClipMonitor(logging.Filter):
         return False
 
     def epoch_text(self):
-        """Summary for the epoch that just ended, then reset for the next one."""
         if self.windows:
             text = "clip %.1f%%" % (sum(self.windows) / len(self.windows))
         else:
@@ -100,9 +81,7 @@ class ClipMonitor(logging.Filter):
         return text
 
 
-# --------------------------------------------------------------------------- #
 def model_summary(models):
-    """Table of models with parameter counts, as a printable string."""
     rows, total, trainable = [], 0, 0
     for name, model in models.items():
         n = sum(p.numel() for p in model.parameters())
@@ -125,10 +104,8 @@ def model_summary(models):
     return "\n".join(out)
 
 
-# --------------------------------------------------------------------------- #
 class _MetricsBar(tqdm):
-    """tqdm with a `{metrics}` field. tqdm's own `{postfix}` always gets a ', '
-    prefix; extra format_dict keys are passed to the format string untouched."""
+    # adds a {metrics} field to the bar format
     metrics = ""
 
     @property
@@ -139,14 +116,9 @@ class _MetricsBar(tqdm):
 
 
 class EpochProgress:
-    """Live bar for one epoch.
-
-    leave=False: the line is erased when the epoch ends, so the next epoch's bar
-    takes its place. The full record goes to the log file via close().
-
-    The bar is advanced manually instead of wrapping the loader: tqdm closes a
-    wrapped iterable as soon as the loop ends, which would freeze the line before
-    clip / validation results could be added to it.
+    """
+    Progress bar of one epoch. The bar is updated by hand instead of wrapping the loader,
+    so that it stays open for the validation results after the last batch.
     """
 
     def __init__(self, iterable, epoch, nb_epochs, enabled=True, refresh_every=20,
@@ -154,9 +126,9 @@ class EpochProgress:
         self.iterable = iterable
         self.desc = "Epoch %*d/%d" % (len(str(nb_epochs)), epoch, nb_epochs)
         self.refresh_every = refresh_every
-        self.sections = dict(sticky or {})       # e.g. {"best": "best val cer 3.41% @84"}
+        self.sections = dict(sticky or {})
         self.bar = _MetricsBar(total=len(iterable), desc=self.desc, bar_format=BAR_FORMAT,
-                               ascii=" ━", leave=leave, dynamic_ncols=True, disable=not enabled)
+                               leave=leave, dynamic_ncols=True, disable=not enabled)
         self._render()
 
     def __iter__(self):
@@ -165,7 +137,6 @@ class EpochProgress:
             self.bar.update(1)
 
     def live(self, ind_batch, display_values):
-        """Update the running train metrics every `refresh_every` batches."""
         if ind_batch % self.refresh_every == 0:
             self.set("train", format_metrics(display_values), refresh=False)
 
@@ -176,7 +147,7 @@ class EpochProgress:
             self.bar.refresh()
 
     def close(self):
-        """Close the bar and return the full plain line for the log file."""
+        """Closes the bar and returns the line for train_log.txt."""
         elapsed = self.bar.format_dict.get("elapsed", 0.0)
         self.bar.close()
         return "%s | %4.0fs | %s" % (self.desc, elapsed, self._joined(FILE_SECTIONS))
@@ -188,7 +159,7 @@ class EpochProgress:
             return
         room = max(20, shutil.get_terminal_size((110, 24)).columns - BAR_OVERHEAD)
         if len(joined) > room:
-            joined = joined[:room - 1] + "…"
+            joined = joined[:room - 3] + "..."
         self.bar.metrics = "| " + joined
 
     def _joined(self, order):
@@ -196,7 +167,6 @@ class EpochProgress:
 
 
 class TrainLog:
-    """Appends one plain line per epoch to a text file (survives restarts)."""
 
     def __init__(self, path):
         self.path = path
