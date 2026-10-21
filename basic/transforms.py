@@ -33,6 +33,7 @@
 #  knowledge of the CeCILL-C license and that you accept its terms.
 
 import itertools
+import warnings
 import numpy as np
 from skimage import transform as stf
 from numpy import random, floor
@@ -241,18 +242,20 @@ class RandomTransform:
         br_right = fd(min(w * 3 / 4 - bl_left, dw))
 
         tform = stf.ProjectiveTransform()
-        tform.estimate(np.array((
-            (tl_left, tl_top),
-            (bl_left, h - bl_bottom),
-            (w - br_right, h - br_bottom),
-            (w - tr_right, tr_top)
-        )), np.array((
-            [0, 0],
-            [0, h - 1],
-            [w - 1, h - 1],
-            [w - 1, 0]
-        )))
-
+        with warnings.catch_warnings():
+             # estimate() is deprecated since scikit-image 0.26, the result does not change
+             warnings.simplefilter("ignore", FutureWarning)
+             tform.estimate(np.array((
+                 (tl_left, tl_top),
+                 (bl_left, h - bl_bottom),
+                 (w - br_right, h - br_bottom),
+                 (w - tr_right, tr_top)
+             )), np.array((
+                 [0, 0],
+                 [0, h - 1],
+                 [w - 1, h - 1],
+                 [w - 1, 0]
+             )))
         # determine shape of output image, to preserve size
         # trick take from the implementation of skimage.transform.rotate
         corners = np.array([

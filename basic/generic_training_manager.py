@@ -34,7 +34,7 @@
 
 import torch
 import os
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 import copy
 import json
 import torch.distributed as dist
@@ -68,7 +68,7 @@ class GenericTrainingManager:
         self.latest_valid_metrics = dict()
         self.curriculum_info = dict()
         self.curriculum_info["latest_valid_metrics"] = dict()
-        self.scaler = GradScaler(enabled=self.params["training_params"].get("use_amp", False))
+        self.scaler = GradScaler("cuda", enabled=self.params["training_params"].get("use_amp", False))
         self.optimizer = None
         self.lr_scheduler = None
         self.best = None
