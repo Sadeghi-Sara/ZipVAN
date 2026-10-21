@@ -32,11 +32,14 @@
 #  The fact that you are presently reading this means that you have had
 #  knowledge of the CeCILL-C license and that you accept its terms.
 
-from torch.nn import Module, ModuleList
+import math
+import torch
+from torch.nn import Module, ModuleList, Parameter
 from torch.nn import Conv2d, InstanceNorm2d, Dropout, Dropout2d
 from torch.nn import ReLU
 from torch.nn.functional import pad
 import random
+from basic.scaling import SwooshR, SwooshL
 
 
 class DepthSepConv2D(Module):
@@ -83,34 +86,69 @@ class MixDropout(Module):
         return self.dropout2d(x)
 
 
+class Bypass2d(Module):
+    """Learned residual connection: c * module_out + (1 - c) * skip, with c = sigmoid(theta) per channel."""
+
+    def __init__(self, channels, init_c=0.1, init_std=0.02):
+        super(Bypass2d, self).__init__()
+        logit = math.log(init_c / (1.0 - init_c))
+        # the jitter keeps theta from being constant (its RMS would be 0 for init_c=0.5,
+        # and ScaledAdam scales the updates of a tensor by its RMS)
+        self.c = Parameter(torch.full((1, channels, 1, 1), logit) + torch.randn(1, channels, 1, 1) * init_std)
+
+    def forward(self, module_out, skip):
+        c = torch.sigmoid(self.c)
+        return c * module_out + (1 - c) * skip
+
+
 class FCN_Encoder(Module):
     def __init__(self, params):
         super(FCN_Encoder, self).__init__()
 
         self.dropout = params["dropout"]
+        # "relu" (VAN) or "swoosh": SwooshR inside the blocks, SwooshL at the output of the DSC blocks
+        swoosh = params.get("activation", "relu") == "swoosh"
+        act = SwooshR if swoosh else ReLU
+        out_act = SwooshL if swoosh else None
+        # False: residual additions (VAN), True: learned bypasses
+        self.bypass = params.get("bypass", False)
 
         self.init_blocks = ModuleList([
-            ConvBlock(params["input_channels"], 16, stride=(1, 1), dropout=self.dropout),
-            ConvBlock(16, 32, stride=(2, 2), dropout=self.dropout),
-            ConvBlock(32, 64, stride=(2, 2), dropout=self.dropout),
-            ConvBlock(64, 128, stride=(2, 2), dropout=self.dropout),
-            ConvBlock(128, 128, stride=(2, 1), dropout=self.dropout),
-            ConvBlock(128, 128, stride=(2, 1), dropout=self.dropout),
+            ConvBlock(params["input_channels"], 16, stride=(1, 1), dropout=self.dropout, activation=act),
+            ConvBlock(16, 32, stride=(2, 2), dropout=self.dropout, activation=act),
+            ConvBlock(32, 64, stride=(2, 2), dropout=self.dropout, activation=act),
+            ConvBlock(64, 128, stride=(2, 2), dropout=self.dropout, activation=act),
+            ConvBlock(128, 128, stride=(2, 1), dropout=self.dropout, activation=act),
+            ConvBlock(128, 128, stride=(2, 1), dropout=self.dropout, activation=act),
         ])
         self.blocks = ModuleList([
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout),
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout),
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout),
-            DSCBlock(128, 256, pool=(1, 1), dropout=self.dropout),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
+            DSCBlock(128, 256, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
         ])
+        if self.bypass:
+            self.bypasses = ModuleList([Bypass2d(128), Bypass2d(128), Bypass2d(128)])
+            self.stack_bypass = Bypass2d(128, init_c=0.5)
 
     def forward(self, x):
         for b in self.init_blocks:
             x = b(x)
+        if self.bypass:
+            return self.forward_bypass(x)
         for b in self.blocks:
             xt = b(x)
             x = x + xt if x.size() == xt.size() else xt
         return x
+
+    def forward_bypass(self, x):
+        # DSC blocks 2 and 3 form a stack with its own bypass around it
+        x = self.bypasses[0](self.blocks[0](x), x)
+        skip = x
+        x = self.bypasses[1](self.blocks[1](x), x)
+        x = self.bypasses[2](self.blocks[2](x), x)
+        x = self.stack_bypass(x, skip)
+        return self.blocks[3](x)
 
 
 class ConvBlock(Module):
@@ -150,10 +188,11 @@ class ConvBlock(Module):
 
 class DSCBlock(Module):
 
-    def __init__(self, in_, out_, pool=(2, 1), activation=ReLU, dropout=0.4):
+    def __init__(self, in_, out_, pool=(2, 1), activation=ReLU, dropout=0.4, out_activation=None):
         super(DSCBlock, self).__init__()
 
         self.activation = activation()
+        self.out_activation = out_activation() if out_activation else None
         self.conv1 = DepthSepConv2D(in_, out_, kernel_size=(3, 3))
         self.conv2 = DepthSepConv2D(out_, out_, kernel_size=(3, 3))
         self.conv3 = DepthSepConv2D(out_, out_, kernel_size=(3, 3), padding=(1, 1), stride=pool)
@@ -179,4 +218,6 @@ class DSCBlock(Module):
 
         if pos == 3:
             x = self.dropout(x)
+        if self.out_activation:
+            x = self.out_activation(x)
         return x

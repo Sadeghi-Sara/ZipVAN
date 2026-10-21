@@ -26,9 +26,12 @@ LINE_RECIPE = {
     "ctc_zero_infinity": True,
 }
 
+ZIPFORMER_BLOCKS = {"activation": "swoosh", "bypass": True}
+
 LINE_PRESETS = {
     "van": ({}, {}),
     "L1": ({}, LINE_RECIPE),
+    "L2": (ZIPFORMER_BLOCKS, LINE_RECIPE),
 }
 
 
