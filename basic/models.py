@@ -39,7 +39,7 @@ from torch.nn import Conv2d, InstanceNorm2d, Dropout, Dropout2d
 from torch.nn import ReLU
 from torch.nn.functional import pad
 import random
-from basic.scaling import SwooshR, SwooshL
+from basic.scaling import SwooshR, SwooshL, BiasNorm
 
 
 class DepthSepConv2D(Module):
@@ -129,6 +129,14 @@ class UpsampleW(Module):
         return x.repeat_interleave(self.factor, dim=-1)[..., :width]
 
 
+def make_norm(kind, channels):
+    if kind == "instance":
+        return InstanceNorm2d(channels, eps=0.001, momentum=0.99, track_running_stats=False)
+    if kind == "bias":
+        return BiasNorm(channels, channel_dim=1, log_scale=0.0)
+    raise ValueError("unknown norm: {}".format(kind))
+
+
 class FCN_Encoder(Module):
     def __init__(self, params):
         super(FCN_Encoder, self).__init__()
@@ -143,6 +151,7 @@ class FCN_Encoder(Module):
         self.ds_factor_w = params.get("ds_factor_w", 1)
         if self.ds_factor_w > 1 and not self.bypass:
             raise ValueError("ds_factor_w > 1 requires bypass=True")
+        norm = params.get("norm_dsc", "instance")
 
         self.init_blocks = ModuleList([
             ConvBlock(params["input_channels"], 16, stride=(1, 1), dropout=self.dropout, activation=act),
@@ -153,10 +162,10 @@ class FCN_Encoder(Module):
             ConvBlock(128, 128, stride=(2, 1), dropout=self.dropout, activation=act),
         ])
         self.blocks = ModuleList([
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
-            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
-            DSCBlock(128, 256, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act, norm=norm),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act, norm=norm),
+            DSCBlock(128, 128, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act, norm=norm),
+            DSCBlock(128, 256, pool=(1, 1), dropout=self.dropout, activation=act, out_activation=out_act, norm=norm),
         ])
         if self.bypass:
             self.bypasses = ModuleList([Bypass2d(128), Bypass2d(128), Bypass2d(128)])
@@ -226,7 +235,7 @@ class ConvBlock(Module):
 
 class DSCBlock(Module):
 
-    def __init__(self, in_, out_, pool=(2, 1), activation=ReLU, dropout=0.4, out_activation=None):
+    def __init__(self, in_, out_, pool=(2, 1), activation=ReLU, dropout=0.4, out_activation=None, norm="instance"):
         super(DSCBlock, self).__init__()
 
         self.activation = activation()
@@ -234,7 +243,7 @@ class DSCBlock(Module):
         self.conv1 = DepthSepConv2D(in_, out_, kernel_size=(3, 3))
         self.conv2 = DepthSepConv2D(out_, out_, kernel_size=(3, 3))
         self.conv3 = DepthSepConv2D(out_, out_, kernel_size=(3, 3), padding=(1, 1), stride=pool)
-        self.norm_layer = InstanceNorm2d(out_, eps=0.001, momentum=0.99, track_running_stats=False)
+        self.norm_layer = make_norm(norm, out_)
         self.dropout = MixDropout(dropout_proba=dropout, dropout2d_proba=dropout/2)
 
     def forward(self, x):

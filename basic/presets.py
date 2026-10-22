@@ -33,6 +33,8 @@ LINE_PRESETS = {
     "L1": ({}, LINE_RECIPE),
     "L2": (ZIPFORMER_BLOCKS, LINE_RECIPE),
     "L3": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2), LINE_RECIPE),
+    "L4": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), LINE_RECIPE),
+    "L4_no_ds": (dict(ZIPFORMER_BLOCKS, ds_factor_w=1, norm_dsc="bias"), LINE_RECIPE),
 }
 
 
