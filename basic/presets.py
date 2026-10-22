@@ -32,6 +32,7 @@ LINE_PRESETS = {
     "van": ({}, {}),
     "L1": ({}, LINE_RECIPE),
     "L2": (ZIPFORMER_BLOCKS, LINE_RECIPE),
+    "L3": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2), LINE_RECIPE),
 }
 
 

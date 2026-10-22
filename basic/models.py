@@ -101,6 +101,34 @@ class Bypass2d(Module):
         return c * module_out + (1 - c) * skip
 
 
+class DownsampleW(Module):
+    """Averages every `factor` adjacent feature columns."""
+
+    def __init__(self, factor=2):
+        super(DownsampleW, self).__init__()
+        self.factor = factor
+        # not used: drawn so that the initialization is the same as in the reported runs
+        torch.randn(factor)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        rem = (-w) % self.factor
+        if rem:
+            x = pad(x, (0, rem))
+        return x.view(b, c, h, -1, self.factor).mean(dim=-1)
+
+
+class UpsampleW(Module):
+    """Repeats every feature column `factor` times and crops to the given width."""
+
+    def __init__(self, factor=2):
+        super(UpsampleW, self).__init__()
+        self.factor = factor
+
+    def forward(self, x, width):
+        return x.repeat_interleave(self.factor, dim=-1)[..., :width]
+
+
 class FCN_Encoder(Module):
     def __init__(self, params):
         super(FCN_Encoder, self).__init__()
@@ -112,6 +140,9 @@ class FCN_Encoder(Module):
         out_act = SwooshL if swoosh else None
         # False: residual additions (VAN), True: learned bypasses
         self.bypass = params.get("bypass", False)
+        self.ds_factor_w = params.get("ds_factor_w", 1)
+        if self.ds_factor_w > 1 and not self.bypass:
+            raise ValueError("ds_factor_w > 1 requires bypass=True")
 
         self.init_blocks = ModuleList([
             ConvBlock(params["input_channels"], 16, stride=(1, 1), dropout=self.dropout, activation=act),
@@ -129,6 +160,9 @@ class FCN_Encoder(Module):
         ])
         if self.bypass:
             self.bypasses = ModuleList([Bypass2d(128), Bypass2d(128), Bypass2d(128)])
+            if self.ds_factor_w > 1:
+                self.down = DownsampleW(self.ds_factor_w)
+                self.up = UpsampleW(self.ds_factor_w)
             self.stack_bypass = Bypass2d(128, init_c=0.5)
 
     def forward(self, x):
@@ -145,8 +179,12 @@ class FCN_Encoder(Module):
         # DSC blocks 2 and 3 form a stack with its own bypass around it
         x = self.bypasses[0](self.blocks[0](x), x)
         skip = x
+        if self.ds_factor_w > 1:
+            x = self.down(x)
         x = self.bypasses[1](self.blocks[1](x), x)
         x = self.bypasses[2](self.blocks[2](x), x)
+        if self.ds_factor_w > 1:
+            x = self.up(x, skip.shape[-1])
         x = self.stack_bypass(x, skip)
         return self.blocks[3](x)
 
