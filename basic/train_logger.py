@@ -13,7 +13,7 @@ BAR_FORMAT = "{desc} {bar:10} {n_fmt}/{total_fmt} {elapsed}<{remaining} {metrics
 BAR_OVERHEAD = 48
 SCREEN_SECTIONS = ("train", "best", "clip")
 FILE_SECTIONS = ("train", "lr", "clip", "val")
-SHORT_NAMES = {"loss_ctc": "ctc", "loss_ce": "ce", "loss_ce_end": "ce_end"}
+SHORT_NAMES = {"loss_ctc": "ctc", "loss_ce": "ce", "loss_ce_end": "ce_end", "loss_cr": "cr"}
 
 
 def format_metrics(values):

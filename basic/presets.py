@@ -26,6 +26,8 @@ LINE_RECIPE = {
     "ctc_zero_infinity": True,
 }
 
+CR_CTC = dict(LINE_RECIPE, cr_alpha=0.2, train_metrics=["loss_ctc", "loss_cr", "cer", "wer"])
+
 ZIPFORMER_BLOCKS = {"activation": "swoosh", "bypass": True}
 
 LINE_PRESETS = {
@@ -35,6 +37,7 @@ LINE_PRESETS = {
     "L3": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2), LINE_RECIPE),
     "L4": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), LINE_RECIPE),
     "L4_no_ds": (dict(ZIPFORMER_BLOCKS, ds_factor_w=1, norm_dsc="bias"), LINE_RECIPE),
+    "L5": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), CR_CTC),
 }
 
 

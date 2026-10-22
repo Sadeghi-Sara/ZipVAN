@@ -59,6 +59,27 @@ class TrainerLineCTC(GenericTrainingManager):
                        reduction=self.params["training_params"].get("ctc_reduction", "sum"),
                        zero_infinity=self.params["training_params"].get("ctc_zero_infinity", False))
 
+    def passes_per_sample(self):
+        return 2 if self.params["training_params"].get("cr_alpha", 0) > 0 else 1
+
+    def cr_loss(self, log_pa, log_pb, x_reduced_len, y_len):
+        """
+        Consistency term of CR-CTC: 0.5 * (KL(sg(pb) || pa) + KL(sg(pa) || pb)) summed over
+        the valid frames of each line, divided by the number of characters of the line and
+        averaged over the batch (the normalization of CTCLoss with reduction="mean").
+        log_pa, log_pb: (B, vocab_size + 1, W) log-probabilities of the two views
+        """
+        B, _, W = log_pa.shape
+        mask = torch.zeros(B, W, device=log_pa.device)
+        for i, l in enumerate(x_reduced_len):
+            mask[i, :l] = 1.0
+        pa, pb = log_pa.exp(), log_pb.exp()
+        kl_ab = (pb.detach() * (log_pb.detach() - log_pa)).sum(dim=1)
+        kl_ba = (pa.detach() * (log_pa.detach() - log_pb)).sum(dim=1)
+        per_sample = (0.5 * (kl_ab + kl_ba) * mask).sum(dim=1)
+        target_len = torch.as_tensor(y_len, dtype=per_sample.dtype, device=per_sample.device)
+        return (per_sample / target_len.clamp(min=1.0)).mean()
+
     def train_batch(self, batch_data, metric_names):
         x = batch_data["imgs"].to(self.device)
         y = batch_data["labels"].to(self.device)
@@ -66,18 +87,31 @@ class TrainerLineCTC(GenericTrainingManager):
         y_len = batch_data["labels_len"]
 
         loss_ctc = self.ctc_loss()
+        cr_alpha = self.params["training_params"].get("cr_alpha", 0)
+        loss_cr = None
         self.optimizer.zero_grad(set_to_none=True)
 
         with autocast(device_type="cuda", enabled=self.params["training_params"]["use_amp"]):
-            x = self.models["encoder"](x)
-            global_pred = self.models["decoder"](x)
-
-            loss = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+            if cr_alpha > 0:
+                # CR-CTC: two forward passes with different dropout. Both views share the
+                # geometric augmentation of the data loader, so their frames stay aligned.
+                pred_a = self.models["decoder"](self.models["encoder"](x))
+                pred_b = self.models["decoder"](self.models["encoder"](x))
+                ctc_a = loss_ctc(pred_a.permute(2, 0, 1), y, x_reduced_len, y_len)
+                ctc_b = loss_ctc(pred_b.permute(2, 0, 1), y, x_reduced_len, y_len)
+                ctc = 0.5 * (ctc_a + ctc_b)
+                loss_cr = self.cr_loss(pred_a, pred_b, x_reduced_len, y_len)
+                loss = ctc + cr_alpha * loss_cr
+                global_pred = pred_a
+            else:
+                global_pred = self.models["decoder"](self.models["encoder"](x))
+                ctc = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
+                loss = ctc
 
         pred = torch.argmax(global_pred, dim=1).cpu().numpy()
         if not torch.isfinite(loss):
             print("Non-finite loss, batch skipped: {}".format(batch_data["names"]), flush=True)
-            return self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=0.0, metric_names=metric_names)
+            return self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=0.0, loss_cr=0.0, metric_names=metric_names)
 
         self.backward_loss(loss)
 
@@ -87,7 +121,9 @@ class TrainerLineCTC(GenericTrainingManager):
         else:
             self.optimizer.step()
 
-        metrics = self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=loss.item(), metric_names=metric_names)
+        # the CTC part only, so that loss_ctc can be compared with runs without CR-CTC
+        metrics = self.compute_metrics(pred, y.cpu().numpy(), x_reduced_len, y_len, loss=ctc.item(),
+                                       loss_cr=0.0 if loss_cr is None else loss_cr.item(), metric_names=metric_names)
         return metrics
 
     def evaluate_batch(self, batch_data, metric_names):
@@ -115,7 +151,7 @@ class TrainerLineCTC(GenericTrainingManager):
             metrics["pred"].extend([batch_data["unchanged_labels"], batch_data["names"]])
         return metrics
 
-    def compute_metrics(self, x, y, x_len, y_len, loss=None, metric_names=list()):
+    def compute_metrics(self, x, y, x_len, y_len, loss=None, loss_cr=None, metric_names=list()):
         batch_size = y.shape[0]
         ind_x = [x[i][:x_len[i]] for i in range(batch_size)]
         ind_y = [y[i][:y_len[i]] for i in range(batch_size)]
@@ -139,5 +175,7 @@ class TrainerLineCTC(GenericTrainingManager):
                 metrics["loss_ctc"] = loss / metrics["nb_chars"]
             else:
                 metrics["loss_ctc"] = loss
+        if "loss_cr" in metric_names:
+            metrics["loss_cr"] = 0.0 if loss_cr is None else loss_cr
         metrics["nb_samples"] = len(x)
         return metrics

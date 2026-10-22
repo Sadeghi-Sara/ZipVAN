@@ -34,7 +34,7 @@
 
 import torch
 import os
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
 import copy
 import json
 import torch.distributed as dist
@@ -68,7 +68,7 @@ class GenericTrainingManager:
         self.latest_valid_metrics = dict()
         self.curriculum_info = dict()
         self.curriculum_info["latest_valid_metrics"] = dict()
-        self.scaler = GradScaler("cuda", enabled=self.params["training_params"].get("use_amp", False))
+        self.scaler = GradScaler(enabled=self.params["training_params"].get("use_amp", False))
         self.optimizer = None
         self.lr_scheduler = None
         self.best = None
@@ -428,7 +428,7 @@ class GenericTrainingManager:
                 display_values[metric_name] = np.round(np.mean(np.abs(metrics[metric_name])), 3)
             elif metric_name in ["time", "pred", "probas", "nb_max_len", "worst_cer", ]:
                 continue
-            elif metric_name in ["loss", "loss_ctc", "loss_ce", "loss_ce_end"]:
+            elif metric_name in ["loss", "loss_ctc", "loss_ce", "loss_ce_end", "loss_cr"]:
                 display_values[metric_name] = round(metrics[metric_name] / self.latest_batch, 4)
             else:
                 display_values[metric_name] = round(metrics[metric_name] / metrics["nb_samples"], 4)
