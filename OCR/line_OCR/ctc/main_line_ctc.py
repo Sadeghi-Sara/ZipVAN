@@ -196,6 +196,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output_folder", default=None, help="default: <preset>_seed<seed>, fcn_iam_line for van")
     parser.add_argument("--eval_only", action="store_true", help="evaluate the best checkpoint of the output folder")
+    parser.add_argument("--max_epochs", type=int, default=None, help="number of epochs, overrides the preset")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the last checkpoint of the output folder instead of the best one")
     args = parser.parse_args()
 
     apply_preset(params, *LINE_PRESETS[args.preset])
@@ -205,6 +208,10 @@ if __name__ == "__main__":
         params["training_params"]["output_folder"] = args.output_folder
     elif args.preset != "van":
         params["training_params"]["output_folder"] = "{}_seed{}".format(args.preset, params["training_params"]["manual_seed"])
+    if args.max_epochs:
+        params["training_params"]["max_nb_epochs"] = args.max_epochs
+    if args.resume:
+         params["training_params"]["load_epoch"] = "last"
     params["training_params"]["eval_only"] = args.eval_only
 
     if params["training_params"]["use_ddp"] and not params["training_params"]["force_cpu"]:
