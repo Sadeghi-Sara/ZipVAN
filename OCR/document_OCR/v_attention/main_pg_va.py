@@ -42,13 +42,19 @@ from basic.generic_dataset_manager import OCRDataset
 import torch
 import torch.multiprocessing as mp
 from glob import glob
+import argparse
+from basic.presets import LINE_PRESETS, PARAGRAPH_RECIPE, apply_preset
 
 
 def train_and_test(rank, params):
     params["training_params"]["ddp_rank"] = rank
     model = Manager(params)
-    # Model trains until max_time_training or max_nb_epochs is reached
-    model.train()
+    if params["training_params"].get("eval_only", False):
+        if model.latest_epoch < 0:
+            raise SystemExit("no checkpoint in {}".format(model.paths["checkpoints"]))
+    else:
+        # Model trains until max_time_training or max_nb_epochs is reached
+        model.train()
 
     # load weights giving best CER on valid set
     model.params["training_params"]["load_epoch"] = "best"
@@ -62,13 +68,32 @@ def train_and_test(rank, params):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preset", default="van", choices=["van", "zipvan"])
+    parser.add_argument("--line_preset", default="L6", choices=list(LINE_PRESETS.keys()),
+                        help="zipvan: line-level preset the encoder comes from")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--line_folder", default=None, help="zipvan: line-level output folder, default <line_preset>_seed<seed>")
+    parser.add_argument("--output_folder", default=None, help="zipvan: default P_<line_preset>_seed<seed>")
+    parser.add_argument("--eval_only", action="store_true", help="evaluate the best checkpoint of the output folder")
+    parser.add_argument("--max_epochs", type=int, default=None, help="number of epochs, overrides the preset")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the last checkpoint of the output folder instead of the best one")
+    args = parser.parse_args()
+
+    if args.preset == "zipvan":
+        seed = PARAGRAPH_RECIPE["manual_seed"] if args.seed is None else args.seed
+        line_folder = args.line_folder or "{}_seed{}".format(args.line_preset, seed)
+    else:
+        line_folder = args.line_folder or "fcn_iam_line"
 
     dataset_name = "IAM"  # ["RIMES", "IAM", "READ_2016"]
 
-    # encoder and decoder are initialized from the line-level baseline (main_line_ctc.py)
-    line_checkpoint = glob("../../line_OCR/ctc/outputs/fcn_iam_line/checkpoints/best_*.pt")
-    assert len(line_checkpoint) == 1, \
-        "expected one line-level best_*.pt checkpoint, found {}".format(line_checkpoint)
+    # encoder and decoder are initialized from a line-level run (main_line_ctc.py)
+    line_checkpoint = glob("../../line_OCR/ctc/outputs/{}/checkpoints/best_*.pt".format(line_folder))
+    if len(line_checkpoint) != 1 and not args.eval_only:
+        raise SystemExit("expected one line-level best_*.pt checkpoint, found {}".format(line_checkpoint))
+    line_checkpoint = line_checkpoint or [None]
 
     params = {
         "dataset_params": {
@@ -224,6 +249,22 @@ if __name__ == "__main__":
         },
 
     }
+
+    if args.preset == "zipvan":
+        apply_preset(params, LINE_PRESETS[args.line_preset][0], PARAGRAPH_RECIPE)
+        params["training_params"]["output_folder"] = "P_{}_seed{}".format(args.line_preset, seed)
+    if args.output_folder:
+        params["training_params"]["output_folder"] = args.output_folder
+    if args.seed is not None:
+        params["training_params"]["manual_seed"] = args.seed
+    if args.eval_only:
+        params["model_params"]["transfer_learning"] = None
+    if args.max_epochs:
+        params["training_params"]["max_nb_epochs"] = args.max_epochs
+    if args.resume:
+        params["training_params"]["load_epoch"] = "last"
+
+    params["training_params"]["eval_only"] = args.eval_only
 
     if params["training_params"]["stop_mode"] == "learned":
         params["training_params"]["train_metrics"].append("loss_ce")

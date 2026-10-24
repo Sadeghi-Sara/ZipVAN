@@ -53,7 +53,9 @@ class Manager(GenericTrainingManager):
         return torch.zeros((num_layers, batch_size, hidden_size), device=self.device), torch.zeros((num_layers, batch_size, hidden_size), device=self.device)
 
     def train_batch(self, batch_data, metric_names):
-        loss_ctc_func = CTCLoss(blank=self.dataset.tokens["blank"], reduction="sum")
+        reduction = self.params["training_params"].get("ctc_reduction", "sum")
+        loss_ctc_func = CTCLoss(blank=self.dataset.tokens["blank"], reduction=reduction,
+                                zero_infinity=self.params["training_params"].get("ctc_zero_infinity", False))
         loss_ce_func = CrossEntropyLoss(ignore_index=self.dataset.tokens["pad"])
         global_loss = 0
         total_loss_ctc = 0
@@ -113,7 +115,13 @@ class Manager(GenericTrainingManager):
                         line_preds[i].append(lp)
 
         if not torch.isfinite(global_loss):
-            print("NaN/Inf detected in training loss")
+            print("Non-finite loss, batch skipped: {}".format(batch_data["names"]), flush=True)
+            metrics = self.compute_metrics(line_preds, batch_data["raw_labels"], metric_names, from_line=True)
+            if "loss_ctc" in metric_names:
+                metrics["loss_ctc"] = 0.0
+            if "loss_ce" in metric_names:
+                metrics["loss_ce"] = 0.0
+            return metrics
 
         self.backward_loss(global_loss)
         if self.params["training_params"]["use_amp"]:
@@ -124,7 +132,8 @@ class Manager(GenericTrainingManager):
 
         metrics = self.compute_metrics(line_preds, batch_data["raw_labels"], metric_names, from_line=True)
         if "loss_ctc" in metric_names:
-            metrics["loss_ctc"] = total_loss_ctc / metrics["nb_chars"]
+            # with reduction="mean" each line loss is already divided by its number of characters
+            metrics["loss_ctc"] = total_loss_ctc / metrics["nb_chars"] if reduction == "sum" else total_loss_ctc
         if "loss_ce" in metric_names:
             metrics["loss_ce"] = total_loss_ce
         return metrics

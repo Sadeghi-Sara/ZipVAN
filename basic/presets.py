@@ -13,7 +13,7 @@ from basic.scaled_optimizer import ScaledAdam, Eden
 LINE_RECIPE = {
     "batch_size": 4,
     "max_nb_epochs": 500,
-    "manual_seed": 3333,
+    "manual_seed": 1111,
     "optimizer": {
         "class": ScaledAdam,
         "args": {"lr": 0.03, "clipping_scale": 2.0},
@@ -39,6 +39,24 @@ LINE_PRESETS = {
     "L4_no_ds": (dict(ZIPFORMER_BLOCKS, ds_factor_w=1, norm_dsc="bias"), LINE_RECIPE),
     "L5": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), CR_CTC),
     "L6": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), dict(CR_CTC, cr_mask_frac=0.3, cr_mask_max_px=64)),
+}
+
+# paragraph-level training of ZipVAN (the encoder and decoder come from a line-level run)
+PARAGRAPH_RECIPE = {
+    "batch_size": 2,
+    "max_nb_epochs": 1000,
+    "manual_seed": 1111,
+    "use_amp": False,
+    "optimizer": {
+        "class": ScaledAdam,
+        "args": {"lr": 0.002, "clipping_scale": 2.0},
+    },
+    "lr_scheduler": {
+        "type": Eden,
+        "args": {"lr_batches": 5000, "lr_epochs": 15, "warmup_batches": 500},
+    },
+    "ctc_reduction": "mean",
+    "ctc_zero_infinity": True,
 }
 
 
