@@ -36,6 +36,9 @@ from basic.generic_training_manager import GenericTrainingManager
 from basic.utils import edit_wer_from_list, nb_words_from_list, nb_chars_from_list, LM_ind_to_str
 import editdistance
 import re
+import os
+import numpy as np
+from PIL import Image
 import torch
 from torch.nn import CTCLoss
 from torch.amp import autocast
@@ -80,6 +83,42 @@ class TrainerLineCTC(GenericTrainingManager):
         target_len = torch.as_tensor(y_len, dtype=per_sample.dtype, device=per_sample.device)
         return (per_sample / target_len.clamp(min=1.0)).mean()
 
+    def width_mask(self, x, widths):
+        """
+        Fills random vertical strips of each line with the padding value. Each strip is
+        0 to cr_mask_max_px pixels wide, and at most cr_mask_frac of the line width is masked.
+        Only the real width of each line is masked, not the batch padding.
+        """
+        frac = self.params["training_params"].get("cr_mask_frac", 0)
+        if frac <= 0:
+            return x
+        max_px = int(self.params["training_params"].get("cr_mask_max_px", 64))
+        fill = float(self.params["dataset_params"]["config"]["padding_value"])
+        x = x.clone()
+        for i, w in enumerate(widths):
+            w = int(w)
+            budget = int(frac * w)
+            used = 0
+            for _ in range(max(1, -(-budget // max_px))):
+                mw = min(int(torch.randint(0, max_px + 1, (1,)).item()), budget - used, w)
+                if mw <= 0:
+                    break
+                start = int(torch.randint(0, w - mw + 1, (1,)).item())
+                x[i, :, :, start:start + mw] = fill
+                used += mw
+        return x
+
+    def save_mask_preview(self, xa, xb, widths):
+        # the two masked views of the first training line, saved once per run
+        if getattr(self, "mask_preview_saved", False) or not self.is_master:
+            return
+        self.mask_preview_saved = True
+        w = int(widths[0])
+        views = [np.clip(v[0, :, :, :w].detach().permute(1, 2, 0).cpu().numpy(), 0, 255).astype(np.uint8) for v in (xa, xb)]
+        sep = np.full((6, w, views[0].shape[2]), 128, dtype=np.uint8)
+        Image.fromarray(np.concatenate([views[0], sep, views[1]], axis=0)).save(
+            os.path.join(self.paths["results"], "cr_mask_preview.png"))
+
     def train_batch(self, batch_data, metric_names):
         x = batch_data["imgs"].to(self.device)
         y = batch_data["labels"].to(self.device)
@@ -95,8 +134,13 @@ class TrainerLineCTC(GenericTrainingManager):
             if cr_alpha > 0:
                 # CR-CTC: two forward passes with different dropout. Both views share the
                 # geometric augmentation of the data loader, so their frames stay aligned.
-                pred_a = self.models["decoder"](self.models["encoder"](x))
-                pred_b = self.models["decoder"](self.models["encoder"](x))
+                widths = [s[1] for s in batch_data["imgs_shape"]]
+                xa = self.width_mask(x, widths)
+                xb = self.width_mask(x, widths)
+                if self.params["training_params"].get("cr_mask_frac", 0) > 0:
+                    self.save_mask_preview(xa, xb, widths)
+                pred_a = self.models["decoder"](self.models["encoder"](xa))
+                pred_b = self.models["decoder"](self.models["encoder"](xb))
                 ctc_a = loss_ctc(pred_a.permute(2, 0, 1), y, x_reduced_len, y_len)
                 ctc_b = loss_ctc(pred_b.permute(2, 0, 1), y, x_reduced_len, y_len)
                 ctc = 0.5 * (ctc_a + ctc_b)

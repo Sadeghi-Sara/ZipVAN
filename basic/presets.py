@@ -13,7 +13,7 @@ from basic.scaled_optimizer import ScaledAdam, Eden
 LINE_RECIPE = {
     "batch_size": 4,
     "max_nb_epochs": 500,
-    "manual_seed": 1111,
+    "manual_seed": 3333,
     "optimizer": {
         "class": ScaledAdam,
         "args": {"lr": 0.03, "clipping_scale": 2.0},
@@ -38,6 +38,7 @@ LINE_PRESETS = {
     "L4": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), LINE_RECIPE),
     "L4_no_ds": (dict(ZIPFORMER_BLOCKS, ds_factor_w=1, norm_dsc="bias"), LINE_RECIPE),
     "L5": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), CR_CTC),
+    "L6": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), dict(CR_CTC, cr_mask_frac=0.3, cr_mask_max_px=64)),
 }
 
 
