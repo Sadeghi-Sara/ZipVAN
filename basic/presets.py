@@ -44,7 +44,7 @@ LINE_PRESETS = {
 # paragraph-level training of ZipVAN (the encoder and decoder come from a line-level run)
 PARAGRAPH_RECIPE = {
     "batch_size": 2,
-    "max_nb_epochs": 1000,
+    "max_nb_epochs": 500,
     "manual_seed": 1111,
     "use_amp": False,
     "optimizer": {
