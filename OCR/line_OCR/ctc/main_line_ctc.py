@@ -59,6 +59,12 @@ def train_and_test(rank, params):
     model.params["training_params"]["load_epoch"] = "best"
     model.load_model()
 
+    if params["training_params"].get("peakiness", False):
+        for dataset_name in params["dataset_params"]["datasets"].keys():
+            for set_name in ["test", "valid"]:
+                model.peakiness("{}-{}".format(dataset_name, set_name), [(dataset_name, set_name), ])
+        return
+
     # compute metrics on train, valid and test sets (in eval conditions)
     metrics = ["cer", "wer", "time", "worst_cer"]
     for dataset_name in params["dataset_params"]["datasets"].keys():
@@ -196,6 +202,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output_folder", default=None, help="default: <preset>_seed<seed>, fcn_iam_line for van")
     parser.add_argument("--eval_only", action="store_true", help="evaluate the best checkpoint of the output folder")
+    parser.add_argument("--peakiness", action="store_true", help="CTC output statistics of the best checkpoint")
     parser.add_argument("--max_epochs", type=int, default=None, help="number of epochs, overrides the preset")
     parser.add_argument("--resume", action="store_true",
                         help="continue from the last checkpoint of the output folder instead of the best one")
@@ -212,7 +219,8 @@ if __name__ == "__main__":
         params["training_params"]["max_nb_epochs"] = args.max_epochs
     if args.resume:
          params["training_params"]["load_epoch"] = "last"
-    params["training_params"]["eval_only"] = args.eval_only
+    params["training_params"]["eval_only"] = args.eval_only or args.peakiness
+    params["training_params"]["peakiness"] = args.peakiness
 
     if params["training_params"]["use_ddp"] and not params["training_params"]["force_cpu"]:
         mp.spawn(train_and_test, args=(params,), nprocs=params["training_params"]["nb_gpu"])

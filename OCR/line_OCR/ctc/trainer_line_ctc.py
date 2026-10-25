@@ -195,6 +195,47 @@ class TrainerLineCTC(GenericTrainingManager):
             metrics["pred"].extend([batch_data["unchanged_labels"], batch_data["names"]])
         return metrics
 
+    def peakiness(self, custom_name, sets_list):
+        """
+        Statistics of the greedy CTC path, as in Table 6 of the CR-CTC paper: mean number of
+        frames per emitted character, share of blank frames, and mean probability of the
+        winning token on blank and on non-blank frames. Written to results/peakiness_<name>.txt.
+        """
+        self.dataset.generate_test_loader(custom_name, sets_list)
+        for m in self.models.values():
+            m.eval()
+        blank = self.dataset.tokens["blank"]
+        n_frames = n_blank = n_chars = frames_per_char = 0
+        p_blank = p_char = 0.0
+        with torch.no_grad():
+            for batch_data in self.dataset.test_loaders[custom_name]:
+                x = batch_data["imgs"].to(self.device)
+                x_len = [s[1] for s in batch_data["imgs_reduced_shape"]]
+                best_p, best = self.models["decoder"](self.models["encoder"](x)).exp().max(dim=1)
+                for i, l in enumerate(x_len):
+                    b, bp = best[i, :l], best_p[i, :l]
+                    is_blank = b == blank
+                    n_frames += l
+                    n_blank += int(is_blank.sum())
+                    p_blank += bp[is_blank].sum().item()
+                    p_char += bp[~is_blank].sum().item()
+                    seq, t = b.tolist(), 0
+                    while t < l:
+                        if seq[t] == blank:
+                            t += 1
+                            continue
+                        start = t
+                        while t < l and seq[t] == seq[start]:
+                            t += 1
+                        frames_per_char += t - start
+                        n_chars += 1
+        line = "{}: frames per char {:.3f}, blank frames {:.1f}%, p(blank) {:.2f}%, p(char) {:.2f}%, {} chars".format(
+            custom_name, frames_per_char / max(n_chars, 1), 100 * n_blank / max(n_frames, 1),
+            100 * p_blank / max(n_blank, 1), 100 * p_char / max(n_frames - n_blank, 1), n_chars)
+        print(line, flush=True)
+        with open(os.path.join(self.paths["results"], "peakiness_{}.txt".format(custom_name)), "w") as f:
+            f.write(line + "\n")
+
     def compute_metrics(self, x, y, x_len, y_len, loss=None, loss_cr=None, metric_names=list()):
         batch_size = y.shape[0]
         ind_x = [x[i][:x_len[i]] for i in range(batch_size)]
