@@ -106,7 +106,7 @@ python3 main_pg_va.py --preset zipvan --line_preset L6 --output_folder P_L6_1000
 
 ## Trained models
 
-The checkpoints of the final models are in [release v1.0](https://github.com/Sadeghi-Sara/ZipVAN/releases/tag/v1.0): the three line models (`L6`) and the three paragraph models (`P_L6_1000`), with the `params` file of each run. Put a checkpoint in the `checkpoints` folder of its run and keep `best` in its file name, for example:
+The checkpoints of the final models are in [release v1.0](https://github.com/Sadeghi-Sara/ZipVAN/releases/tag/v1.0): the three line models (`L6`) and the three paragraph models (`P_L6_1000`), with the `params` file of each paragraph run. Put a checkpoint in the `checkpoints` folder of its run and keep `best` in its file name, for example:
 
 ```
 OCR/line_OCR/ctc/outputs/L6_seed1111/checkpoints/best_452.pt
