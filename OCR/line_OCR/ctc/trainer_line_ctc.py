@@ -148,6 +148,8 @@ class TrainerLineCTC(GenericTrainingManager):
                 loss = ctc + cr_alpha * loss_cr
                 global_pred = pred_a
             else:
+                # without CR-CTC, cr_mask_frac > 0 masks the single view (width masks as augmentation)
+                x = self.width_mask(x, [s[1] for s in batch_data["imgs_shape"]])
                 global_pred = self.models["decoder"](self.models["encoder"](x))
                 ctc = loss_ctc(global_pred.permute(2, 0, 1), y, x_reduced_len, y_len)
                 loss = ctc
