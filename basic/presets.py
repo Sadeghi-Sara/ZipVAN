@@ -39,6 +39,15 @@ LINE_PRESETS = {
     "L4_no_ds": (dict(ZIPFORMER_BLOCKS, ds_factor_w=1, norm_dsc="bias"), LINE_RECIPE),
     "L5": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), CR_CTC),
     "L6": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"), dict(CR_CTC, cr_mask_frac=0.3, cr_mask_max_px=64)),
+    # control for L6: the width masks without the consistency term
+    "L6_masks_only": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"),
+                      dict(LINE_RECIPE, cr_mask_frac=0.3, cr_mask_max_px=64)),
+    # control for L6 at equal cost: CTC with twice the batch size and twice the epochs
+    "L4_double": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"),
+                  dict(LINE_RECIPE, batch_size=8, max_nb_epochs=1000)),
+    # control for L4 at equal cost: CR-CTC with half the batch size and half the epochs, as in the CR-CTC paper
+    "L6_half": (dict(ZIPFORMER_BLOCKS, ds_factor_w=2, norm_dsc="bias"),
+                dict(CR_CTC, cr_mask_frac=0.3, cr_mask_max_px=64, batch_size=2, max_nb_epochs=250)),
 }
 
 # paragraph-level training of ZipVAN (the encoder and decoder come from a line-level run)
