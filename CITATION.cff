@@ -1,18 +1,70 @@
 cff-version: 1.2.0
-title: 'VAN: Vertical Attention Network'
+title: 'ZipVAN: A Lightweight Handwritten Paragraph Recognition Model Leveraging ASR-Inspired Techniques'
 message: >-
-  If you use this software, please cite it using the
-  metadata from this file.
+  If you use this software, please cite it using the metadata from
+  this file, and cite the Vertical Attention Network it is built on.
 type: software
 authors:
-  - given-names: 'Denis '
-    family-names: Coquenet
-    orcid: 'https://orcid.org/0000-0001-5203-9423'
-  - name: Université de Rouen Normandie
-  - name: INSA Rouen
-  - name: LITIS
-identifiers:
-  - type: url
-    value: 'https://arxiv.org/abs/2012.03868'
-repository-code: 'https://github.com/FactoDeepLearning/VAN/'
-license: CECILL-C
+  - given-names: Sara
+    family-names: Sadeghi
+    affiliation: University of Tehran
+  - given-names: Bagher
+    family-names: BabaAli
+    affiliation: University of Tehran
+repository-code: 'https://github.com/Sadeghi-Sara/ZipVAN'
+license:
+  - CECILL-C
+  - Apache-2.0
+references:
+  - type: article
+    title: 'End-to-end Handwritten Paragraph Text Recognition Using a Vertical Attention Network'
+    authors:
+      - given-names: Denis
+        family-names: Coquenet
+      - given-names: Clément
+        family-names: Chatelain
+      - given-names: Thierry
+        family-names: Paquet
+    journal: 'IEEE Transactions on Pattern Analysis and Machine Intelligence'
+    volume: 45
+    issue: 1
+    start: 508
+    end: 524
+    year: 2023
+    doi: 10.1109/TPAMI.2022.3144899
+  - type: software
+    title: 'VAN: Vertical Attention Network'
+    authors:
+      - given-names: Denis
+        family-names: Coquenet
+    repository-code: 'https://github.com/FactoDeepLearning/VerticalAttentionOCR'
+    license: CECILL-C
+  - type: conference-paper
+    title: 'Zipformer: A faster and better encoder for automatic speech recognition'
+    authors:
+      - given-names: Zengwei
+        family-names: Yao
+      - given-names: Liyong
+        family-names: Guo
+      - given-names: Xiaoyu
+        family-names: Yang
+      - given-names: Wei
+        family-names: Kang
+      - given-names: Fangjun
+        family-names: Kuang
+      - given-names: Yifan
+        family-names: Yang
+      - given-names: Zengrui
+        family-names: Jin
+      - given-names: Long
+        family-names: Lin
+      - given-names: Daniel
+        family-names: Povey
+    collection-title: 'International Conference on Learning Representations (ICLR)'
+    year: 2024
+  - type: software
+    title: icefall
+    authors:
+      - name: k2-fsa
+    repository-code: 'https://github.com/k2-fsa/icefall'
+    license: Apache-2.0
