@@ -16,6 +16,7 @@ log*.txt
 **/*.aux
 **/*.log
 **.png
+!figures/*.png
 **.mp4
 **egg-info**
 **.gif
